@@ -15,8 +15,8 @@ public class StateService {
     private final AppDataRepository appDataRepository;
     private final ObjectMapper objectMapper;
 
-    // This should be the JSON string of your frontend's getInitialState()
-    private static final String INITIAL_STATE = "{}";
+    // Replace this with your frontend's getInitialState() JSON string
+    private static final String INITIAL_STATE = "PASTE_YOUR_INITIAL_STATE_HERE";
 
     public String getFullState() {
         AppData appData = appDataRepository.findMain()
