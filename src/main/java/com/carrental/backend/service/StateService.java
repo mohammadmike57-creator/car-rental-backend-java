@@ -15,8 +15,13 @@ public class StateService {
     private final AppDataRepository appDataRepository;
     private final ObjectMapper objectMapper;
 
-    // Replace this with your frontend's getInitialState() JSON string
-    private static final String INITIAL_STATE = "PASTE_YOUR_INITIAL_STATE_HERE";
+    // 🔴 REPLACE THIS with your frontend's getInitialState() JSON string
+    // Instructions:
+    // 1. In your frontend (NCT-Rental--main/App.tsx), find the getInitialState function.
+    // 2. Copy the returned object (the entire { ... }).
+    // 3. Minify it to a single‑line JSON string (use an online tool like jsonformatter.org or remove newlines manually).
+    // 4. Replace the string below with that minified JSON. Make sure to escape any double quotes inside.
+    private static final String INITIAL_STATE = "{}";
 
     public String getFullState() {
         AppData appData = appDataRepository.findMain()
