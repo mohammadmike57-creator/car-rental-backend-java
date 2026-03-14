@@ -35,7 +35,7 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/auth/**").permitAll()
                 .requestMatchers("/health").permitAll()
-                .requestMatchers("/socket.io/**").permitAll()  // Allow socket.io connections
+                .requestMatchers("/socket.io/**").permitAll()   // ✅ critical for socket.io
                 .anyRequest().authenticated()
             )
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
