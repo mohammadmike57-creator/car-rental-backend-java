@@ -11,9 +11,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.LocalDate;
 import java.util.List;
-import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/reservations")
@@ -36,18 +34,9 @@ public class ReservationController {
 
     @GetMapping
     @PreAuthorize("hasAuthority('VIEW_RESERVATIONS')")
-    public ResponseEntity<List<Reservation>> getAllReservations(
-            @RequestParam(required = false) Integer year,
-            @RequestParam(required = false) String month) {
-        List<Reservation> reservations;
-        if (year != null && month != null) {
-            LocalDate start = LocalDate.of(year, 1, 1);
-            LocalDate end = start.plusYears(1);
-            reservations = reservationRepository.findAllByStartDateBetween(start, end);
-            // TODO: refine month filtering if needed
-        } else {
-            reservations = reservationRepository.findAll();
-        }
+    public ResponseEntity<List<Reservation>> getAllReservations() {
+        // TODO: add filtering by year/month later
+        List<Reservation> reservations = reservationRepository.findAll();
         return ResponseEntity.ok(reservations);
     }
 
