@@ -15,6 +15,7 @@ public class StateService {
     private final AppDataRepository appDataRepository;
     private final ObjectMapper objectMapper;
 
+    // Minimal valid JSON – replace with your actual getInitialState() later
     private static final String INITIAL_STATE = "{\"reservations\":{},\"sources\":[],\"fleet\":[],\"companyDetails\":{\"name\":\"\",\"subName\":\"\",\"address\":\"\",\"phone\":\"\",\"email\":\"\",\"taxNumber\":\"\",\"requirePaymentApproval\":false},\"trafficTickets\":[],\"vehicleDamages\":[],\"users\":[],\"expenses\":[],\"rentalLocations\":[],\"messages\":[],\"invoices\":[],\"availableExtras\":[],\"franchisePayments\":[],\"activityLog\":[],\"aggregators\":[],\"stopSales\":[],\"years\":[]}";
 
     public String getFullState() {
