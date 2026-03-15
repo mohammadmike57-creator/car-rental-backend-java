@@ -15,14 +15,7 @@ public class StateService {
     private final AppDataRepository appDataRepository;
     private final ObjectMapper objectMapper;
 
-    // 🔴 REPLACE THIS with your frontend's getInitialState() JSON string
-    // Instructions:
-    // 1. In your frontend (NCT-Rental--main/App.tsx), find the getInitialState function.
-    // 2. Copy the returned object (the entire { ... }).
-    // 3. Minify it to a single‑line JSON string (remove newlines, ensure double quotes).
-    //    You can use an online tool like https://jsonformatter.org
-    // 4. Replace the string below with that minified JSON.
-    //    Important: Escape any double quotes inside by adding a backslash (e.g., " becomes \").
+    // Minimal initial state – will be overwritten when you replace with real JSON later
     private static final String INITIAL_STATE = "{}";
 
     public String getFullState() {
