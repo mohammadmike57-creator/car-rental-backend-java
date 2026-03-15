@@ -19,8 +19,10 @@ public class StateService {
     // Instructions:
     // 1. In your frontend (NCT-Rental--main/App.tsx), find the getInitialState function.
     // 2. Copy the returned object (the entire { ... }).
-    // 3. Minify it to a single‑line JSON string (use an online tool like jsonformatter.org or remove newlines manually).
-    // 4. Replace the string below with that minified JSON. Make sure to escape any double quotes inside.
+    // 3. Minify it to a single‑line JSON string (remove newlines, ensure double quotes).
+    //    You can use an online tool like https://jsonformatter.org
+    // 4. Replace the string below with that minified JSON.
+    //    Important: Escape any double quotes inside by adding a backslash (e.g., " becomes \").
     private static final String INITIAL_STATE = "{}";
 
     public String getFullState() {
