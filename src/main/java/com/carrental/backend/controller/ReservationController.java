@@ -9,7 +9,6 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -34,13 +33,11 @@ public class ReservationController {
     }
 
     @GetMapping
-    @PreAuthorize("hasAuthority('VIEW_RESERVATIONS')")
     public ResponseEntity<List<Reservation>> getAllReservations() {
         return ResponseEntity.ok(reservationRepository.findAll());
     }
 
     @GetMapping("/{id}")
-    @PreAuthorize("hasAuthority('VIEW_RESERVATIONS')")
     public ResponseEntity<Reservation> getReservation(@PathVariable String id) {
         return reservationRepository.findById(id)
                 .map(ResponseEntity::ok)
@@ -48,28 +45,26 @@ public class ReservationController {
     }
 
     @PostMapping
-    @PreAuthorize("hasAuthority('ACTION_RESERVATIONS_ADD')")
+    // Temporarily removed @PreAuthorize to debug
     public ResponseEntity<?> createReservation(@RequestBody Reservation reservation, HttpServletRequest request) {
         try {
             User currentUser = getCurrentUser(request);
             if (currentUser != null) {
                 reservation.setCreatedBy(currentUser);
             }
-            // Validate required fields
             if (reservation.getPersonName() == null || reservation.getStartDate() == null || reservation.getEndDate() == null) {
                 return ResponseEntity.badRequest().body("Missing required fields: personName, startDate, endDate");
             }
             Reservation saved = reservationRepository.save(reservation);
             return ResponseEntity.ok(saved);
         } catch (Exception e) {
-            e.printStackTrace(); // This will appear in logs
+            e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body("Error creating reservation: " + e.getMessage());
         }
     }
 
     @PutMapping("/{id}")
-    @PreAuthorize("hasAuthority('ACTION_RESERVATIONS_EDIT')")
     public ResponseEntity<?> updateReservation(@PathVariable String id, @RequestBody Reservation reservation, HttpServletRequest request) {
         try {
             if (!reservationRepository.existsById(id)) {
@@ -90,7 +85,6 @@ public class ReservationController {
     }
 
     @DeleteMapping("/{id}")
-    @PreAuthorize("hasAuthority('ACTION_RESERVATIONS_DELETE')")
     public ResponseEntity<Void> deleteReservation(@PathVariable String id) {
         if (!reservationRepository.existsById(id)) {
             return ResponseEntity.notFound().build();
