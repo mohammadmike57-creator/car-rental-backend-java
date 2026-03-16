@@ -1,16 +1,20 @@
 package com.carrental.backend.model;
 
 import jakarta.persistence.*;
-import lombok.Data;
 
 @Entity
 @Table(name = "app_data")
-@Data
 public class AppData {
     @Id
     private String id = "main";
 
     @Lob
     @Column(columnDefinition = "text")
-    private String data; // JSON string of AllData
+    private String data;
+
+    public String getId() { return id; }
+    public void setId(String id) { this.id = id; }
+
+    public String getData() { return data; }
+    public void setData(String data) { this.data = data; }
 }
