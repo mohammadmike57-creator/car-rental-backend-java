@@ -20,6 +20,6 @@ public class TrafficTicket {
     private TrafficTicketStatus status;
 
     @Lob
-    private String ticketDocument; // base64
+    private String ticketDocument;
     private String ticketDocumentFilename;
 }
