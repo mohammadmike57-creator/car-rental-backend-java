@@ -10,7 +10,6 @@ public class CompanyDetailsController {
 
     @GetMapping
     public ResponseEntity<CompanyDetails> getCompanyDetails() {
-        // Return dummy data for now – replace with real logic later
         CompanyDetails dummy = new CompanyDetails();
         dummy.setName("NCT Car Rental");
         dummy.setSubName("Rental Solutions");
