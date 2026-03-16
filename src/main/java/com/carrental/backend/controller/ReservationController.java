@@ -7,6 +7,7 @@ import com.carrental.backend.repository.UserRepository;
 import com.carrental.backend.security.JwtUtil;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -35,9 +36,7 @@ public class ReservationController {
     @GetMapping
     @PreAuthorize("hasAuthority('VIEW_RESERVATIONS')")
     public ResponseEntity<List<Reservation>> getAllReservations() {
-        // TODO: add filtering by year/month later
-        List<Reservation> reservations = reservationRepository.findAll();
-        return ResponseEntity.ok(reservations);
+        return ResponseEntity.ok(reservationRepository.findAll());
     }
 
     @GetMapping("/{id}")
@@ -50,28 +49,44 @@ public class ReservationController {
 
     @PostMapping
     @PreAuthorize("hasAuthority('ACTION_RESERVATIONS_ADD')")
-    public ResponseEntity<Reservation> createReservation(@RequestBody Reservation reservation, HttpServletRequest request) {
-        User currentUser = getCurrentUser(request);
-        if (currentUser != null) {
-            reservation.setCreatedBy(currentUser);
+    public ResponseEntity<?> createReservation(@RequestBody Reservation reservation, HttpServletRequest request) {
+        try {
+            User currentUser = getCurrentUser(request);
+            if (currentUser != null) {
+                reservation.setCreatedBy(currentUser);
+            }
+            // Validate required fields
+            if (reservation.getPersonName() == null || reservation.getStartDate() == null || reservation.getEndDate() == null) {
+                return ResponseEntity.badRequest().body("Missing required fields: personName, startDate, endDate");
+            }
+            Reservation saved = reservationRepository.save(reservation);
+            return ResponseEntity.ok(saved);
+        } catch (Exception e) {
+            e.printStackTrace(); // This will appear in logs
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error creating reservation: " + e.getMessage());
         }
-        Reservation saved = reservationRepository.save(reservation);
-        return ResponseEntity.ok(saved);
     }
 
     @PutMapping("/{id}")
     @PreAuthorize("hasAuthority('ACTION_RESERVATIONS_EDIT')")
-    public ResponseEntity<Reservation> updateReservation(@PathVariable String id, @RequestBody Reservation reservation, HttpServletRequest request) {
-        if (!reservationRepository.existsById(id)) {
-            return ResponseEntity.notFound().build();
+    public ResponseEntity<?> updateReservation(@PathVariable String id, @RequestBody Reservation reservation, HttpServletRequest request) {
+        try {
+            if (!reservationRepository.existsById(id)) {
+                return ResponseEntity.notFound().build();
+            }
+            reservation.setId(id);
+            User currentUser = getCurrentUser(request);
+            if (currentUser != null) {
+                reservation.setLastEditedBy(currentUser);
+            }
+            Reservation saved = reservationRepository.save(reservation);
+            return ResponseEntity.ok(saved);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error updating reservation: " + e.getMessage());
         }
-        reservation.setId(id);
-        User currentUser = getCurrentUser(request);
-        if (currentUser != null) {
-            reservation.setLastEditedBy(currentUser);
-        }
-        Reservation saved = reservationRepository.save(reservation);
-        return ResponseEntity.ok(saved);
     }
 
     @DeleteMapping("/{id}")
