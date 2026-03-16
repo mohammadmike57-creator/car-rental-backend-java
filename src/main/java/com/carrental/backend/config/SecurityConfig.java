@@ -35,8 +35,7 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/auth/**").permitAll()
                 .requestMatchers("/health").permitAll()
-                .requestMatchers("/api/reservations/**").permitAll()  // Allow all operations
-                .requestMatchers("/api/company").permitAll()
+                .requestMatchers("/api/reservations/**").permitAll() // allow all
                 .anyRequest().authenticated()
             )
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
