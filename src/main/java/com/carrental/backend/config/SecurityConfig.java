@@ -33,10 +33,7 @@ public class SecurityConfig {
             .csrf(csrf -> csrf.disable())
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/auth/**").permitAll()
-                .requestMatchers("/health").permitAll()
-                .requestMatchers("/api/reservations/**").permitAll() // allow all
-                .anyRequest().authenticated()
+                .anyRequest().permitAll()  // ⚠️ TEMPORARY – allow all requests
             )
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
