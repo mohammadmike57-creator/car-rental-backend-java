@@ -15,7 +15,39 @@ public class StateService {
     private final AppDataRepository appDataRepository;
     private final ObjectMapper objectMapper;
 
-    private static final String INITIAL_STATE = "{\"reservations\":{},\"sources\":[],\"fleet\":[],\"companyDetails\":{\"name\":\"\",\"subName\":\"\",\"address\":\"\",\"phone\":\"\",\"email\":\"\",\"taxNumber\":\"\",\"requirePaymentApproval\":false},\"trafficTickets\":[],\"vehicleDamages\":[],\"users\":[],\"expenses\":[],\"rentalLocations\":[],\"messages\":[],\"invoices\":[],\"availableExtras\":[],\"franchisePayments\":[],\"activityLog\":[],\"aggregators\":[],\"stopSales\":[],\"years\":[]}";
+    private static final String INITIAL_STATE = "{" +
+        "\"reservations\":{}," +
+        "\"sources\":[" +
+            "{\"id\":\"1\",\"name\":\"Website\",\"paymentType\":\"PREPAID\"}," +
+            "{\"id\":\"2\",\"name\":\"Phone\",\"paymentType\":\"PAY_ON_ARRIVAL\"}," +
+            "{\"id\":\"3\",\"name\":\"Walk-in\",\"paymentType\":\"PAY_ON_ARRIVAL\"}" +
+        "]," +
+        "\"fleet\":[" +
+            "{\"id\":\"v1\",\"modelName\":\"Toyota Corolla\",\"licensePlate\":\"\",\"registrationExpiry\":\"2026-12-31\",\"category\":\"Economy\",\"securityDeposit\":200,\"excess\":500,\"sippCode\":\"EDMR\",\"transmission\":\"AUTOMATIC\"}," +
+            "{\"id\":\"v2\",\"modelName\":\"Hyundai Accent\",\"licensePlate\":\"\",\"registrationExpiry\":\"2026-12-31\",\"category\":\"Economy\",\"securityDeposit\":200,\"excess\":500,\"sippCode\":\"EDMR\",\"transmission\":\"AUTOMATIC\"}," +
+            "{\"id\":\"v3\",\"modelName\":\"Kia Sportage\",\"licensePlate\":\"\",\"registrationExpiry\":\"2026-12-31\",\"category\":\"SUV\",\"securityDeposit\":300,\"excess\":700,\"sippCode\":\"IFAR\",\"transmission\":\"AUTOMATIC\"}" +
+        "]," +
+        "\"companyDetails\":{" +
+            "\"name\":\"UR-Drive Jordan\",\"subName\":\"NCT Car Rental LLC\",\"address\":\"Amman, Jordan\",\"phone\":\"+962 7 9999 9999\",\"email\":\"contact@urdrive.com\",\"taxNumber\":\"123456789\",\"requirePaymentApproval\":false" +
+        "}," +
+        "\"trafficTickets\":[]," +
+        "\"vehicleDamages\":[]," +
+        "\"users\":[]," +
+        "\"expenses\":[]," +
+        "\"rentalLocations\":[" +
+            "{\"id\":\"loc1\",\"name\":\"Amman\",\"address\":\"Amman, Jordan\"}," +
+            "{\"id\":\"loc2\",\"name\":\"Aqaba\",\"address\":\"Aqaba, Jordan\"}," +
+            "{\"id\":\"loc3\",\"name\":\"Dead Sea\",\"address\":\"Dead Sea, Jordan\"}" +
+        "]," +
+        "\"messages\":[]," +
+        "\"invoices\":[]," +
+        "\"availableExtras\":[]," +
+        "\"franchisePayments\":[]," +
+        "\"activityLog\":[]," +
+        "\"aggregators\":[]," +
+        "\"stopSales\":[]," +
+        "\"years\":[2025,2026]" +
+    "}";
 
     public String getFullState() {
         AppData appData = appDataRepository.findMain()
@@ -29,7 +61,7 @@ public class StateService {
     }
 
     public void mergeState(String updatesJson) {
-        System.out.println("Received state update: " + updatesJson);
+        System.out.println("Received state update: " + updatesJson.substring(0, Math.min(updatesJson.length(), 200)) + "...");
         AppData appData = appDataRepository.findMain()
                 .orElseThrow(() -> new RuntimeException("App data not found"));
 
