@@ -15,8 +15,7 @@ public class StateService {
     private final AppDataRepository appDataRepository;
     private final ObjectMapper objectMapper;
 
-    // Minimal valid JSON – replace with your actual getInitialState() later
-    private static final String INITIAL_STATE = "{\"reservations\":{},\"sources\":[],\"fleet\":[],\"companyDetails\":{\"name\":\"\",\"subName\":\"\",\"address\":\"\",\"phone\":\"\",\"email\":\"\",\"taxNumber\":\"\",\"requirePaymentApproval\":false},\"trafficTickets\":[],\"vehicleDamages\":[],\"users\":[],\"expenses\":[],\"rentalLocations\":[],\"messages\":[],\"invoices\":[],\"availableExtras\":[],\"franchisePayments\":[],\"activityLog\":[],\"aggregators\":[],\"stopSales\":[],\"years\":[]}";
+    private static final String INITIAL_STATE = "{}";
 
     public String getFullState() {
         AppData appData = appDataRepository.findMain()
@@ -40,7 +39,8 @@ public class StateService {
             appData.setData(objectMapper.writeValueAsString(merged));
             appDataRepository.save(appData);
         } catch (Exception e) {
-            throw new RuntimeException("Failed to merge state", e);
+            e.printStackTrace(); // This will appear in Render logs
+            throw new RuntimeException("Failed to merge state: " + e.getMessage(), e);
         }
     }
 
