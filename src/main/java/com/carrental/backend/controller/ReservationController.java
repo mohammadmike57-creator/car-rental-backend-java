@@ -45,7 +45,6 @@ public class ReservationController {
     }
 
     @PostMapping
-    // Temporarily removed @PreAuthorize to debug
     public ResponseEntity<?> createReservation(@RequestBody Reservation reservation, HttpServletRequest request) {
         try {
             User currentUser = getCurrentUser(request);
@@ -79,8 +78,7 @@ public class ReservationController {
             return ResponseEntity.ok(saved);
         } catch (Exception e) {
             e.printStackTrace();
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Error updating reservation: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Error updating reservation: " + e.getMessage());
         }
     }
 
