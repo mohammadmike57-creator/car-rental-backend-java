@@ -15,7 +15,7 @@ public class StateService {
     private final AppDataRepository appDataRepository;
     private final ObjectMapper objectMapper;
 
-    private static final String INITIAL_STATE = "{}";
+    private static final String INITIAL_STATE = "{\"reservations\":{},\"sources\":[],\"fleet\":[],\"companyDetails\":{\"name\":\"\",\"subName\":\"\",\"address\":\"\",\"phone\":\"\",\"email\":\"\",\"taxNumber\":\"\",\"requirePaymentApproval\":false},\"trafficTickets\":[],\"vehicleDamages\":[],\"users\":[],\"expenses\":[],\"rentalLocations\":[],\"messages\":[],\"invoices\":[],\"availableExtras\":[],\"franchisePayments\":[],\"activityLog\":[],\"aggregators\":[],\"stopSales\":[],\"years\":[]}";
 
     public String getFullState() {
         AppData appData = appDataRepository.findMain()
@@ -29,6 +29,7 @@ public class StateService {
     }
 
     public void mergeState(String updatesJson) {
+        System.out.println("Received state update: " + updatesJson);
         AppData appData = appDataRepository.findMain()
                 .orElseThrow(() -> new RuntimeException("App data not found"));
 
@@ -36,10 +37,13 @@ public class StateService {
             JsonNode current = objectMapper.readTree(appData.getData());
             JsonNode updates = objectMapper.readTree(updatesJson);
             JsonNode merged = deepMerge(current, updates);
-            appData.setData(objectMapper.writeValueAsString(merged));
+            String mergedJson = objectMapper.writeValueAsString(merged);
+            appData.setData(mergedJson);
             appDataRepository.save(appData);
+            System.out.println("State updated successfully");
         } catch (Exception e) {
-            e.printStackTrace(); // This will appear in Render logs
+            System.err.println("Failed to merge state: " + e.getMessage());
+            e.printStackTrace();
             throw new RuntimeException("Failed to merge state: " + e.getMessage(), e);
         }
     }
