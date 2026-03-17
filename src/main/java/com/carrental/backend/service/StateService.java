@@ -61,9 +61,14 @@ public class StateService {
     }
 
     public void mergeState(String updatesJson) {
-        System.out.println("Received state update: " + updatesJson.substring(0, Math.min(updatesJson.length(), 200)) + "...");
+        // Ensure the document exists before merging
         AppData appData = appDataRepository.findMain()
-                .orElseThrow(() -> new RuntimeException("App data not found"));
+                .orElseGet(() -> {
+                    AppData newData = new AppData();
+                    newData.setId("main");
+                    newData.setData(INITIAL_STATE);
+                    return appDataRepository.save(newData);
+                });
 
         try {
             JsonNode current = objectMapper.readTree(appData.getData());
@@ -72,10 +77,7 @@ public class StateService {
             String mergedJson = objectMapper.writeValueAsString(merged);
             appData.setData(mergedJson);
             appDataRepository.save(appData);
-            System.out.println("State updated successfully");
         } catch (Exception e) {
-            System.err.println("Failed to merge state: " + e.getMessage());
-            e.printStackTrace();
             throw new RuntimeException("Failed to merge state: " + e.getMessage(), e);
         }
     }
