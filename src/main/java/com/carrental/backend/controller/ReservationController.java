@@ -11,6 +11,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDate;
 import java.util.List;
 
 @RestController
@@ -69,11 +70,24 @@ public class ReservationController {
             if (!reservationRepository.existsById(id)) {
                 return ResponseEntity.notFound().build();
             }
+            // Ensure ID is set
             reservation.setId(id);
+            
+            // Set current user as last editor
             User currentUser = getCurrentUser(request);
             if (currentUser != null) {
                 reservation.setLastEditedBy(currentUser);
             }
+
+            // Preserve existing values for fields that are null in the incoming object
+            Reservation existing = reservationRepository.findById(id).get();
+            if (reservation.getPersonName() == null) reservation.setPersonName(existing.getPersonName());
+            if (reservation.getStartDate() == null) reservation.setStartDate(existing.getStartDate());
+            if (reservation.getEndDate() == null) reservation.setEndDate(existing.getEndDate());
+            if (reservation.getBookingId() == null) reservation.setBookingId(existing.getBookingId());
+            if (reservation.getStatus() == null) reservation.setStatus(existing.getStatus());
+            if (reservation.getAmount() == null) reservation.setAmount(existing.getAmount());
+
             Reservation saved = reservationRepository.save(reservation);
             return ResponseEntity.ok(saved);
         } catch (Exception e) {
