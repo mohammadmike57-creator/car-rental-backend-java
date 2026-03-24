@@ -118,3 +118,11 @@ public class AuthController {
         }
     }
 }
+
+    @GetMapping("/test-auth")
+    public ResponseEntity<?> testAuth(@AuthenticationPrincipal UserDetails userDetails) {
+        if (userDetails == null) {
+            return ResponseEntity.status(401).body("Not authenticated");
+        }
+        return ResponseEntity.ok("Authenticated as " + userDetails.getUsername());
+    }
