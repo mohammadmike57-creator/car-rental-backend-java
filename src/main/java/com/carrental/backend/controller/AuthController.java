@@ -56,7 +56,6 @@ public class AuthController {
 
     @PostMapping("/signup")
     public ResponseEntity<?> registerUser(@RequestBody RegisterRequest request) {
-        // Check if user already exists
         if (userRepository.existsByEmail(request.getEmail())) {
             return ResponseEntity.badRequest().body("Email already in use");
         }
@@ -64,7 +63,6 @@ public class AuthController {
             return ResponseEntity.badRequest().body("Username already taken");
         }
 
-        // Convert permissions from strings to UserPermission enum
         List<UserPermission> permissions = request.getPermissions() == null ? List.of() :
             request.getPermissions().stream()
                 .map(p -> {
@@ -77,7 +75,6 @@ public class AuthController {
                 .filter(p -> p != null)
                 .collect(Collectors.toList());
 
-        // Create new user
         User user = new User();
         user.setEmail(request.getEmail());
         user.setUsername(request.getUsername());
@@ -92,7 +89,6 @@ public class AuthController {
 
         userRepository.save(user);
 
-        // Generate JWT token
         String token = jwtUtil.generateToken(user.getEmail());
         return ResponseEntity.ok(new AuthResponse(token, user));
     }
@@ -100,19 +96,25 @@ public class AuthController {
     @PostMapping("/change-password")
     public ResponseEntity<?> changePassword(@RequestBody ChangePasswordRequest request,
                                             @AuthenticationPrincipal UserDetails userDetails) {
-        User user = userRepository.findByEmail(userDetails.getUsername())
-                .orElseThrow(() -> new RuntimeException("User not found"));
-
-        // Verify current password
-        if (!passwordEncoder.matches(request.getCurrentPassword(), user.getPassword())) {
-            return ResponseEntity.badRequest().body("Current password is incorrect");
+        if (userDetails == null) {
+            return ResponseEntity.status(401).body("Not authenticated");
         }
+        try {
+            User user = userRepository.findByEmail(userDetails.getUsername())
+                    .orElseThrow(() -> new RuntimeException("User not found"));
 
-        // Encode and set new password
-        user.setPassword(passwordEncoder.encode(request.getNewPassword()));
-        user.setPasswordLastChanged(LocalDateTime.now());
-        userRepository.save(user);
+            if (!passwordEncoder.matches(request.getCurrentPassword(), user.getPassword())) {
+                return ResponseEntity.badRequest().body("Current password is incorrect");
+            }
 
-        return ResponseEntity.ok().body("Password changed successfully");
+            user.setPassword(passwordEncoder.encode(request.getNewPassword()));
+            user.setPasswordLastChanged(LocalDateTime.now());
+            userRepository.save(user);
+
+            return ResponseEntity.ok().body("Password changed successfully");
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(500).body("Error: " + e.getMessage());
+        }
     }
 }
