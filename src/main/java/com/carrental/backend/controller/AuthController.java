@@ -33,10 +33,6 @@ public class AuthController {
     @Autowired
     private JwtUtil jwtUtil;
 
-    @GetMapping("/")
-    public ResponseEntity<String> health() {
-        return ResponseEntity.ok("OK");
-    }
 
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody AuthRequest request) {
