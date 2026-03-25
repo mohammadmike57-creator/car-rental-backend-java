@@ -64,7 +64,9 @@ public class SecurityConfig {
             "http://localhost:3000",
             "http://localhost:5173",
             "https://www.nctrental.com",
-            "https://nctrental.com"
+            "https://nctrental.com",
+            "https://nct-rental.vercel.app",        // your Vercel app (replace if different)
+            "https://car-rental-backend.onrender.com" // direct Render URL
         ));
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(Arrays.asList("*"));
