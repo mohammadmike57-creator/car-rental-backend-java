@@ -99,25 +99,19 @@ public class AuthController {
         if (userDetails == null) {
             return ResponseEntity.status(401).body("Not authenticated");
         }
-        try {
-            User user = userRepository.findByEmail(userDetails.getUsername())
-                    .orElseThrow(() -> new RuntimeException("User not found"));
+        User user = userRepository.findByEmail(userDetails.getUsername())
+                .orElseThrow(() -> new RuntimeException("User not found"));
 
-            if (!passwordEncoder.matches(request.getCurrentPassword(), user.getPassword())) {
-                return ResponseEntity.badRequest().body("Current password is incorrect");
-            }
-
-            user.setPassword(passwordEncoder.encode(request.getNewPassword()));
-            user.setPasswordLastChanged(LocalDateTime.now());
-            userRepository.save(user);
-
-            return ResponseEntity.ok().body("Password changed successfully");
-        } catch (Exception e) {
-            e.printStackTrace();
-            return ResponseEntity.status(500).body("Error: " + e.getMessage());
+        if (!passwordEncoder.matches(request.getCurrentPassword(), user.getPassword())) {
+            return ResponseEntity.badRequest().body("Current password is incorrect");
         }
+
+        user.setPassword(passwordEncoder.encode(request.getNewPassword()));
+        user.setPasswordLastChanged(LocalDateTime.now());
+        userRepository.save(user);
+
+        return ResponseEntity.ok().body("Password changed successfully");
     }
-}
 
     @GetMapping("/test-auth")
     public ResponseEntity<?> testAuth(@AuthenticationPrincipal UserDetails userDetails) {
@@ -126,3 +120,4 @@ public class AuthController {
         }
         return ResponseEntity.ok("Authenticated as " + userDetails.getUsername());
     }
+}
