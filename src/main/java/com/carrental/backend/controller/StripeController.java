@@ -24,9 +24,9 @@ public class StripeController {
         response.put("url", url);
         return ResponseEntity.ok(response);
     }
-}
 
     @GetMapping("/test")
     public ResponseEntity<String> test() {
         return ResponseEntity.ok("OK");
     }
+}
