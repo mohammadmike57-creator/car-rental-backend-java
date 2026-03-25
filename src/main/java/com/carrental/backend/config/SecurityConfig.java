@@ -51,8 +51,7 @@ public class SecurityConfig {
             .csrf(csrf -> csrf.disable())
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/auth/login", "/auth/signup", "/auth/change-password", "/", "/health", "/api/state").permitAll()
-                .anyRequest().authenticated()
+                .anyRequest().permitAll()  // Allow all requests (temporary)
             );
         return http.build();
     }
