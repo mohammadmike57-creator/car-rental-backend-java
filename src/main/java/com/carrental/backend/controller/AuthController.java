@@ -121,3 +121,8 @@ public class AuthController {
         return ResponseEntity.ok("Authenticated as " + userDetails.getUsername());
     }
 }
+
+    @GetMapping("/")
+    public ResponseEntity<String> health() {
+        return ResponseEntity.ok("OK");
+    }
