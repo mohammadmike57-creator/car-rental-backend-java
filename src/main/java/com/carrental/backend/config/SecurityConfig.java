@@ -51,7 +51,7 @@ public class SecurityConfig {
             .csrf(csrf -> csrf.disable())
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/auth/login", "/auth/signup", "/auth/change-password", "/", "/health", "/api/state").permitAll()
+                .requestMatchers("/auth/login", "/auth/signup", "/auth/change-password", "/", "/health", "/api/state", "/stripe/create-payment-link").permitAll()
                 .anyRequest().authenticated()
             );
         return http.build();
@@ -60,14 +60,7 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(Arrays.asList(
-            "http://localhost:3000",
-            "http://localhost:5173",
-            "https://www.nctrental.com",
-            "https://nctrental.com",
-            "https://nct-rental.vercel.app",        // your Vercel app (replace if different)
-            "https://car-rental-backend.onrender.com" // direct Render URL
-        ));
+        configuration.setAllowedOrigins(Arrays.asList("*"));
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(Arrays.asList("*"));
         configuration.setAllowCredentials(true);
