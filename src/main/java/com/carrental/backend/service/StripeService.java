@@ -7,7 +7,7 @@ import com.stripe.param.PaymentLinkCreateParams.LineItem;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import javax.annotation.PostConstruct;
+import jakarta.annotation.PostConstruct;
 
 @Service
 public class StripeService {
@@ -25,7 +25,6 @@ public class StripeService {
 
     public String createPaymentLink(long amountCents, String description) {
         try {
-            // Create a line item using the existing price (custom amount)
             LineItem lineItem = LineItem.builder()
                     .setPrice(stripePriceId)
                     .setQuantity(1L)
@@ -36,7 +35,7 @@ public class StripeService {
                     .setAfterCompletion(PaymentLinkCreateParams.AfterCompletion.builder()
                             .setType(PaymentLinkCreateParams.AfterCompletion.Type.REDIRECT)
                             .setRedirect(PaymentLinkCreateParams.AfterCompletion.Redirect.builder()
-                                    .setUrl("https://www.nctrental.com/success") // after payment
+                                    .setUrl("https://www.nctrental.com/success")
                                     .build())
                             .build())
                     .build();
