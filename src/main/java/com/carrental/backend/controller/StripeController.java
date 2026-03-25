@@ -25,3 +25,8 @@ public class StripeController {
         return ResponseEntity.ok(response);
     }
 }
+
+    @GetMapping("/test")
+    public ResponseEntity<String> test() {
+        return ResponseEntity.ok("OK");
+    }
