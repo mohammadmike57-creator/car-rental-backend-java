@@ -33,6 +33,11 @@ public class AuthController {
     @Autowired
     private JwtUtil jwtUtil;
 
+    @GetMapping("/")
+    public ResponseEntity<String> health() {
+        return ResponseEntity.ok("OK");
+    }
+
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody AuthRequest request) {
         User user = userRepository.findByEmail(request.getEmail())
@@ -121,8 +126,3 @@ public class AuthController {
         return ResponseEntity.ok("Authenticated as " + userDetails.getUsername());
     }
 }
-
-    @GetMapping("/")
-    public ResponseEntity<String> health() {
-        return ResponseEntity.ok("OK");
-    }
