@@ -51,7 +51,8 @@ public class SecurityConfig {
             .csrf(csrf -> csrf.disable())
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-                .anyRequest().permitAll()  // Allow all requests (temporary)
+                .requestMatchers("/auth/login", "/auth/signup", "/auth/change-password", "/", "/health", "/api/state").permitAll()
+                .anyRequest().authenticated()
             );
         return http.build();
     }
@@ -62,7 +63,8 @@ public class SecurityConfig {
         configuration.setAllowedOrigins(Arrays.asList(
             "http://localhost:3000",
             "http://localhost:5173",
-            "https://www.nctrental.com"
+            "https://www.nctrental.com",
+            "https://nctrental.com"
         ));
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(Arrays.asList("*"));
