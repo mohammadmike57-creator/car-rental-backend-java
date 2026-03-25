@@ -3,6 +3,8 @@ package com.carrental.backend.config;
 import com.carrental.backend.repository.UserRepository;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
@@ -32,9 +34,14 @@ public class SecurityConfig {
         return username -> userRepository.findByEmail(username)
                 .map(u -> User.withUsername(u.getEmail())
                         .password(u.getPassword())
-                        .authorities("USER") // add roles if needed
+                        .authorities("USER")
                         .build())
                 .orElseThrow(() -> new UsernameNotFoundException("User not found: " + username));
+    }
+
+    @Bean
+    public AuthenticationManager authenticationManager(AuthenticationConfiguration authenticationConfiguration) throws Exception {
+        return authenticationConfiguration.getAuthenticationManager();
     }
 
     @Bean
