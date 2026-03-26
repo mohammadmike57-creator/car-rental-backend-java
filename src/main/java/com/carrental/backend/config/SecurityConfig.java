@@ -51,7 +51,7 @@ public class SecurityConfig {
             .csrf(csrf -> csrf.disable())
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-                .anyRequest().permitAll()
+                .anyRequest().permitAll()   // Temporarily allow all requests
             );
         return http.build();
     }
@@ -63,7 +63,8 @@ public class SecurityConfig {
             "http://localhost:3000",
             "http://localhost:5173",
             "https://www.nctrental.com",
-            "https://nctrental.com"
+            "https://nctrental.com",
+            "https://nct-rental.vercel.app"
         ));
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(Arrays.asList("*"));
