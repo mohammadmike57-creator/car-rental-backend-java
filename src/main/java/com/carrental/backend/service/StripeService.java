@@ -2,11 +2,8 @@ package com.carrental.backend.service;
 
 import com.stripe.Stripe;
 import com.stripe.exception.StripeException;
-import com.stripe.model.PaymentLink;
-import com.stripe.param.PaymentLinkCreateParams;
-import com.stripe.param.PaymentLinkCreateParams.LineItem;
-import com.stripe.param.PaymentLinkCreateParams.LineItem.PriceData;
-import com.stripe.param.PaymentLinkCreateParams.LineItem.PriceData.ProductData;
+import com.stripe.model.checkout.Session;
+import com.stripe.param.checkout.SessionCreateParams;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,41 +26,37 @@ public class StripeService {
 
     public String createPaymentLink(long amountCents, String description) {
         try {
-            logger.info("Creating payment link for amount {} cents", amountCents);
-            // Create line item with dynamic price data
-            PriceData priceData = PriceData.builder()
-                    .setCurrency("usd")
-                    .setUnitAmount(amountCents)
-                    .setProductData(
-                            ProductData.builder()
-                                    .setName(description != null ? description : "Franchise Fee")
+            logger.info("Creating checkout session for amount {} cents", amountCents);
+            SessionCreateParams params = SessionCreateParams.builder()
+                    .setMode(SessionCreateParams.Mode.PAYMENT)
+                    .setSuccessUrl("https://www.nctrental.com/success")
+                    .setCancelUrl("https://www.nctrental.com/cancel")
+                    .addLineItem(
+                            SessionCreateParams.LineItem.builder()
+                                    .setPriceData(
+                                            SessionCreateParams.LineItem.PriceData.builder()
+                                                    .setCurrency("usd")
+                                                    .setUnitAmount(amountCents)
+                                                    .setProductData(
+                                                            SessionCreateParams.LineItem.PriceData.ProductData.builder()
+                                                                    .setName(description != null ? description : "Franchise Fee")
+                                                                    .build()
+                                                    )
+                                                    .build()
+                                    )
+                                    .setQuantity(1L)
                                     .build()
                     )
                     .build();
 
-            LineItem lineItem = LineItem.builder()
-                    .setPriceData(priceData)
-                    .setQuantity(1L)
-                    .build();
-
-            PaymentLinkCreateParams params = PaymentLinkCreateParams.builder()
-                    .addLineItem(lineItem)
-                    .setAfterCompletion(PaymentLinkCreateParams.AfterCompletion.builder()
-                            .setType(PaymentLinkCreateParams.AfterCompletion.Type.REDIRECT)
-                            .setRedirect(PaymentLinkCreateParams.AfterCompletion.Redirect.builder()
-                                    .setUrl("https://www.nctrental.com/success")
-                                    .build())
-                            .build())
-                    .build();
-
-            PaymentLink paymentLink = PaymentLink.create(params);
-            logger.info("Payment link created: {}", paymentLink.getUrl());
-            return paymentLink.getUrl();
+            Session session = Session.create(params);
+            logger.info("Checkout session created: {}", session.getUrl());
+            return session.getUrl();
         } catch (StripeException e) {
             logger.error("Stripe API error: {}", e.getMessage(), e);
             throw new RuntimeException("Stripe error: " + e.getMessage());
         } catch (Exception e) {
-            logger.error("Unexpected error creating payment link", e);
+            logger.error("Unexpected error creating checkout session", e);
             throw new RuntimeException("Failed to create payment link: " + e.getMessage());
         }
     }
