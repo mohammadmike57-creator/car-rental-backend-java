@@ -30,19 +30,19 @@ public class StripeService {
     public String createPaymentLink(long amountCents, String description) {
         try {
             logger.info("Creating payment link for amount {} cents", amountCents);
-            // Create a line item with dynamic price data
-            LineItem lineItem = LineItem.builder()
-                    .setPriceData(
-                            PriceData.builder()
-                                    .setCurrency("usd")
-                                    .setUnitAmount(amountCents)
-                                    .setProductData(
-                                            ProductData.builder()
-                                                    .setName(description != null ? description : "Franchise Fee")
-                                                    .build()
-                                    )
+            // Create line item with dynamic price data
+            PriceData priceData = PriceData.builder()
+                    .setCurrency("usd")
+                    .setUnitAmount(amountCents)
+                    .setProductData(
+                            ProductData.builder()
+                                    .setName(description != null ? description : "Franchise Fee")
                                     .build()
                     )
+                    .build();
+
+            LineItem lineItem = LineItem.builder()
+                    .setPriceData(priceData)
                     .setQuantity(1L)
                     .build();
 
