@@ -5,6 +5,8 @@ import com.stripe.exception.StripeException;
 import com.stripe.model.PaymentLink;
 import com.stripe.param.PaymentLinkCreateParams;
 import com.stripe.param.PaymentLinkCreateParams.LineItem;
+import com.stripe.param.PaymentLinkCreateParams.LineItem.PriceData;
+import com.stripe.param.PaymentLinkCreateParams.LineItem.PriceData.ProductData;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,20 +21,28 @@ public class StripeService {
     @Value("${stripe.secret.key}")
     private String stripeSecretKey;
 
-    @Value("${stripe.price.id}")
-    private String stripePriceId;
-
     @PostConstruct
     public void init() {
         Stripe.apiKey = stripeSecretKey;
-        logger.info("StripeService initialized with price ID: {}", stripePriceId);
+        logger.info("StripeService initialized");
     }
 
     public String createPaymentLink(long amountCents, String description) {
         try {
-            logger.info("Creating payment link for amount {} cents with price ID {}", amountCents, stripePriceId);
+            logger.info("Creating payment link for amount {} cents", amountCents);
+            // Create a line item with dynamic price data
             LineItem lineItem = LineItem.builder()
-                    .setPrice(stripePriceId)
+                    .setPriceData(
+                            PriceData.builder()
+                                    .setCurrency("usd")
+                                    .setUnitAmount(amountCents)
+                                    .setProductData(
+                                            ProductData.builder()
+                                                    .setName(description != null ? description : "Franchise Fee")
+                                                    .build()
+                                    )
+                                    .build()
+                    )
                     .setQuantity(1L)
                     .build();
 
