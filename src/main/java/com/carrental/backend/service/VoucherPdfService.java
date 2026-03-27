@@ -2,7 +2,6 @@ package com.carrental.backend.service;
 
 import com.carrental.backend.model.CompanyDetails;
 import com.carrental.backend.model.Reservation;
-import com.carrental.backend.model.Extra;
 import com.itextpdf.kernel.font.PdfFont;
 import com.itextpdf.kernel.font.PdfFontFactory;
 import com.itextpdf.kernel.geom.PageSize;
@@ -13,8 +12,8 @@ import com.itextpdf.layout.element.Paragraph;
 import com.itextpdf.layout.element.Table;
 import com.itextpdf.layout.element.Cell;
 import com.itextpdf.layout.element.Image;
-import com.itextpdf.layout.property.TextAlignment;
-import com.itextpdf.layout.property.UnitValue;
+import com.itextpdf.layout.properties.TextAlignment;
+import com.itextpdf.layout.properties.UnitValue;
 import com.itextpdf.io.image.ImageDataFactory;
 import org.springframework.stereotype.Service;
 
@@ -24,6 +23,8 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.Base64;
+import java.util.List;
+import java.util.Map;
 
 @Service
 public class VoucherPdfService {
@@ -105,12 +106,30 @@ public class VoucherPdfService {
         financialTable.useAllAvailableWidth();
         double baseAmount = reservation.getBaseAmount() != null ? reservation.getBaseAmount() : reservation.getAmount();
         addRow(financialTable, "Base Rental Fee:", "$" + String.format("%.2f", baseAmount));
-        if (reservation.getExtras() != null && !reservation.getExtras().isEmpty()) {
-            addRow(financialTable, "Extras:", "");
-            for (Extra extra : reservation.getExtras()) {
-                addRow(financialTable, "  " + extra.getName(), "$" + String.format("%.2f", extra.getPrice()));
+
+        // Extras – handle generically (assuming extras is a List of Map or List of Extra objects)
+        Object extrasObj = reservation.getExtras();
+        if (extrasObj != null && extrasObj instanceof List) {
+            List<?> extrasList = (List<?>) extrasObj;
+            if (!extrasList.isEmpty()) {
+                addRow(financialTable, "Extras:", "");
+                for (Object extra : extrasList) {
+                    if (extra instanceof Map) {
+                        Map<?, ?> extraMap = (Map<?, ?>) extra;
+                        String name = extraMap.get("name") != null ? extraMap.get("name").toString() : "Unknown";
+                        double price = 0;
+                        if (extraMap.get("price") instanceof Number) {
+                            price = ((Number) extraMap.get("price")).doubleValue();
+                        }
+                        addRow(financialTable, "  " + name, "$" + String.format("%.2f", price));
+                    } else {
+                        // fallback: just print object string
+                        addRow(financialTable, "  " + extra.toString(), "");
+                    }
+                }
             }
         }
+
         addRow(financialTable, "Total Amount:", "$" + String.format("%.2f", reservation.getAmount()));
         addRow(financialTable, "Security Deposit:", "$" + String.format("%.2f", reservation.getSecurityDeposit() != null ? reservation.getSecurityDeposit() : 0));
         addRow(financialTable, "Excess:", "$" + String.format("%.2f", reservation.getExcess() != null ? reservation.getExcess() : 0));
