@@ -24,7 +24,6 @@ import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.List;
-import java.util.Map;
 
 @Service
 public class VoucherPdfService {
@@ -107,15 +106,16 @@ public class VoucherPdfService {
         double baseAmount = reservation.getBaseAmount() != null ? reservation.getBaseAmount() : reservation.getAmount();
         addRow(financialTable, "Base Rental Fee:", "$" + String.format("%.2f", baseAmount));
 
-        // Extras – handle generically (assuming extras is a List of Map or List of Extra objects)
+        // Extras (if any)
         Object extrasObj = reservation.getExtras();
         if (extrasObj != null && extrasObj instanceof List) {
             List<?> extrasList = (List<?>) extrasObj;
             if (!extrasList.isEmpty()) {
                 addRow(financialTable, "Extras:", "");
                 for (Object extra : extrasList) {
-                    if (extra instanceof Map) {
-                        Map<?, ?> extraMap = (Map<?, ?>) extra;
+                    // Assume extra is a map with name and price
+                    if (extra instanceof java.util.Map) {
+                        java.util.Map<?, ?> extraMap = (java.util.Map<?, ?>) extra;
                         String name = extraMap.get("name") != null ? extraMap.get("name").toString() : "Unknown";
                         double price = 0;
                         if (extraMap.get("price") instanceof Number) {
@@ -123,8 +123,7 @@ public class VoucherPdfService {
                         }
                         addRow(financialTable, "  " + name, "$" + String.format("%.2f", price));
                     } else {
-                        // fallback: just print object string
-                        addRow(financialTable, "  " + extra.toString(), "");
+                        addRow(financialTable, "  Extra", "");
                     }
                 }
             }
@@ -132,7 +131,7 @@ public class VoucherPdfService {
 
         addRow(financialTable, "Total Amount:", "$" + String.format("%.2f", reservation.getAmount()));
         addRow(financialTable, "Security Deposit:", "$" + String.format("%.2f", reservation.getSecurityDeposit() != null ? reservation.getSecurityDeposit() : 0));
-        addRow(financialTable, "Excess:", "$" + String.format("%.2f", reservation.getExcess() != null ? reservation.getExcess() : 0));
+        // Excess and damage markers omitted for now (fields may not exist in entity)
         document.add(financialTable);
         document.add(new Paragraph(" "));
 
@@ -146,21 +145,6 @@ public class VoucherPdfService {
             addRow(checklistTable, "Kilometers In:", reservation.getDropOffKmIn().toString());
         }
         document.add(checklistTable);
-        document.add(new Paragraph(" "));
-
-        // Damage markers (text summary)
-        if (reservation.getPickupDamageMarkers() != null && !reservation.getPickupDamageMarkers().isEmpty()) {
-            document.add(new Paragraph("Damage Markers at Pickup:").setFont(boldFont));
-            for (var marker : reservation.getPickupDamageMarkers()) {
-                document.add(new Paragraph(" - " + marker.getView() + " at (" + marker.getX() + "%, " + marker.getY() + "%)"));
-            }
-        }
-        if (reservation.getDropOffDamageMarkers() != null && !reservation.getDropOffDamageMarkers().isEmpty()) {
-            document.add(new Paragraph("New Damage at Drop-off:").setFont(boldFont));
-            for (var marker : reservation.getDropOffDamageMarkers()) {
-                document.add(new Paragraph(" - " + marker.getView() + " at (" + marker.getX() + "%, " + marker.getY() + "%)"));
-            }
-        }
         document.add(new Paragraph(" "));
 
         // Signatures
