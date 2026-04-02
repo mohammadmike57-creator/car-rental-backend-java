@@ -29,7 +29,7 @@ public class StripeService {
             logger.info("Creating checkout session for amount {} cents", amountCents);
             SessionCreateParams params = SessionCreateParams.builder()
                     .setMode(SessionCreateParams.Mode.PAYMENT)
-                    .setSuccessUrl("https://www.nctrental.com/success")
+                    .setSuccessUrl("https://nct-rental.vercel.app")
                     .setCancelUrl("https://www.nctrental.com/cancel")
                     .addLineItem(
                             SessionCreateParams.LineItem.builder()
