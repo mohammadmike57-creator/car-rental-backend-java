@@ -27,9 +27,13 @@ public class DatabaseMigrationConfig {
                 String productName = connection.getMetaData().getDatabaseProductName();
                 if ("PostgreSQL".equalsIgnoreCase(productName)) {
                     JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
-                    logger.info("Running PostgreSQL migration for reservation dates...");
+                    logger.info("Running PostgreSQL migration for application state and reservation dates...");
                     jdbcTemplate.execute("DO $$\n" +
                             "BEGIN\n" +
+                            "  CREATE TABLE IF NOT EXISTS app_data (id varchar(255) PRIMARY KEY, data TEXT NOT NULL);\n" +
+                            "  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='app_data' AND column_name='data' AND data_type <> 'text') THEN\n" +
+                            "    ALTER TABLE app_data ALTER COLUMN data TYPE TEXT USING data::text;\n" +
+                            "  END IF;\n" +
                             "  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='reservations') THEN\n" +
                             "    -- Fix start_date\n" +
                             "    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='reservations' AND column_name='start_date' AND data_type <> 'date') THEN\n" +
@@ -45,7 +49,7 @@ public class DatabaseMigrationConfig {
                             "    END IF;\n" +
                             "  END IF;\n" +
                             "END $$;");
-                    logger.info("PostgreSQL migration for reservation dates completed.");
+                    logger.info("PostgreSQL migration for application state and reservation dates completed.");
                 }
             } catch (Exception e) {
                 logger.error("Database migration failed", e);

@@ -8,8 +8,7 @@ public class AppData {
     @Id
     private String id = "main";
 
-    @Lob
-    @Column(columnDefinition = "longtext")
+    @Column(columnDefinition = "TEXT", nullable = false)
     private String data;
 
     public String getId() { return id; }
