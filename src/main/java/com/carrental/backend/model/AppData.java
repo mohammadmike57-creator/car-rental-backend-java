@@ -9,7 +9,7 @@ public class AppData {
     private String id = "main";
 
     @Lob
-    @Column(columnDefinition = "text")
+    @Column(columnDefinition = "longtext")
     private String data;
 
     public String getId() { return id; }
