@@ -1,6 +1,10 @@
-target/
-*.log
+# Sent to Docker: the website sources (stage 1) plus pom.xml and src/ (stage 2).
+.git
+node_modules
+dist
+target
+screenshots
+docs
+car-rental-backend-java
+car-rental-backend-nodejs
 *.md
-.git/
-.gitignore
-.env

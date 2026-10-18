@@ -80,13 +80,37 @@ public class SecurityConfig {
                     "/auth/signup",
                     "/auth/change-password",
                     "/",
+                    "/index.html",
+                    "/index.tsx",
                     "/health",
                     "/stripe/**",
                     // Partner XML API: authenticated per channel with a feed key (see OtaPartnerController)
                     "/ota/**",
-                    "/api/voucher/**"
+                    "/api/voucher/**",
+                    // Static resources
+                    "/favicon.ico",
+                    "/favicon.png",
+                    "/manifest.json",
+                    "/service-worker.js",
+                    "/sw.js",
+                    "/offline.html",
+                    "/static/**",
+                    "/public/**",
+                    "/assets/**",
+                    "/images/**",
+                    "/icons/**",
+                    "/*.png",
+                    "/*.jpg",
+                    "/*.ico",
+                    "/*.svg",
+                    "/*.js",
+                    "/*.css",
+                    "/*.tsx",
+                    "/*.ts",
+                    "/*.html"
                 ).permitAll()
-                .anyRequest().authenticated()
+                .requestMatchers("/api/**").authenticated()
+                .anyRequest().permitAll()
             )
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
