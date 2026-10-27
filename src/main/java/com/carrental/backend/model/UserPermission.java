@@ -15,6 +15,7 @@ public enum UserPermission {
     VIEW_MY_PROFILE,
     VIEW_AGREEMENTS,
     VIEW_UNLISTED_AGREEMENTS,
+    VIEW_RESERVATION_ADDONS,
     VIEW_IMPORT_RESERVATIONS,
 
     // Reservation actions
