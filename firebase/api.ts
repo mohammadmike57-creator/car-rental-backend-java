@@ -412,6 +412,17 @@ export interface CustomerEmailPayload {
   tone?: 'success' | 'warning' | 'info';
   highlightLabel?: string;
   highlightValue?: string;
+  /** 'letter': the elegant letter design (thank-you emails); default: the document design. */
+  layout?: 'letter';
+  /** Arabic paragraph, shown right-to-left. */
+  arabic?: string;
+  ctaLabel?: string;
+  ctaUrl?: string;
+  /** Signer under "With warm regards". */
+  signature?: string;
+  /** Letter layout: review panel ("Don't forget to rate us on …"); its button is ctaLabel / ctaUrl. */
+  rateTitle?: string;
+  rateText?: string;
 }
 
 export interface EmailOutcome { ok: boolean; reason?: 'unconfigured' | 'invalid' | 'failed'; message?: string }
