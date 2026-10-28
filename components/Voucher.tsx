@@ -7,7 +7,8 @@ import SignaturePad from './SignaturePad';
 import { InspectionDiagram, INSPECTION_LABEL, INSPECTION_SVG, VehicleArt, vehicleKind, vehicleKindLabel } from './VehicleGraphics';
 import { ShieldExclamationIcon, PdfIcon } from './icons';
 import { URDRIVE_LOGO_B64 } from '../constants';
-import { recordActivity } from '../firebase/api';
+import { recordActivity, sendCustomerEmail } from '../firebase/api';
+import { receiptEmailPayload } from '../services/receiptEmail';
 import { emailAgreementDocuments } from '../services/agreementEmail';
 import PaymentChoice from './PaymentChoice';
 import { bookingPayment, isPrepaid as bookingIsPrepaid, paymentUnset, sourceOf, PAYMENT_LABEL } from '../services/paymentType';
@@ -380,6 +381,16 @@ const calculateDaysWithGrace = (start: string, end: string): number => {
   return remainingMs >= gracePeriodInMs ? fullDays + 1 : fullDays;
 };
 
+/** What can still be changed on the agreement after check-out (with "Save changes"). */
+const AMEND_FIELDS: (keyof Reservation)[] = ['customerEmail', 'driver', 'additionalDrivers', 'paymentMethod', 'cardNumber', 'authNumber', 'finalAmountCharged', 'depositHoldMethod', 'depositAuthNumber'];
+/** Saved together with the fields above: extras added while the car is out move the booking total. */
+const AMEND_SAVED: (keyof Reservation)[] = [...AMEND_FIELDS, 'extras', 'baseAmount', 'amount', 'pickupPaymentCollected'];
+const AMEND_LABEL: Partial<Record<keyof Reservation, string>> = {
+  customerEmail: 'email', driver: 'driver documents', additionalDrivers: 'additional drivers', authNumber: 'payment auth code',
+  depositAuthNumber: 'deposit pre-auth code', cardNumber: 'card digits', extras: 'extras',
+  paymentMethod: 'payment method', finalAmountCharged: 'amount charged', depositHoldMethod: 'deposit hold',
+};
+
 const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations, onClose, companyDetails, onUpdate, trafficTickets, onRecordReturnCharges, fleet, allData, onUpgrade, canUpgrade, availableExtras = [] }) => {
   const NO_UPGRADE_ACCESS = 'Your account does not have the "Upgrade vehicle" permission. Ask an administrator to turn it on in User & Staff Management → Permissions.';
   const [showUpgrade, setShowUpgrade] = useState(false);
@@ -418,11 +429,14 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
   useEffect(() => {
     setLocalReservation(withDraft(getInitialReservationState(reservation)));
   }, [reservation]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The agreement as last saved: drafts and the "fill in what is missing" checks compare against it.
+  const [savedBase, setSavedBase] = useState<Reservation>(() => getInitialReservationState(reservation));
+  useEffect(() => { setSavedBase(getInitialReservationState(reservation)); }, [reservation]); // eslint-disable-line react-hooks/exhaustive-deps
   const draftSuspended = useRef(false);
   useEffect(() => {
     if (draftSuspended.current) return;
     const t = window.setTimeout(() => {
-      const base = getInitialReservationState(reservation);
+      const base = savedBase;
       if (phaseOf(base) === 'closed') return;
       const fields = changedFields(base, localReservation);
       if (Object.keys(fields).length) saveDraft(draftKey, { phase: phaseOf(base), fields });
@@ -513,6 +527,12 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
   }, [viewMode, processType, localReservation.voucherSubmitted, localReservation.dropOffCompleted, localReservation.pickupDateTime, localReservation.dropOffDateTime, localReservation.endDate, localReservation.lateReturnFee, dailyRate, onUpdate, localReservation]);
 
   const isPickupEditable = !localReservation.voucherSubmitted;
+  // After check-out the agreement can still be completed: the email changed, missing customer details and
+  // auth codes filled in, and extras added while the car is out. Saved with "Save changes".
+  const canAmend = !!savedBase.voucherSubmitted;
+  const extrasOnRent = canAmend && !savedBase.dropOffCompleted;
+  const isBlank = (v: unknown) => v === undefined || v === null || (typeof v === 'string' && !v.trim());
+  const missingSaved = (k: keyof Reservation) => isBlank(savedBase[k]);
 
   // Until the car is handed over, the deposit and excess follow the car chosen for the rental (fleet settings).
   const fleetTerms = depositTermsFor(fleet, localReservation.licensePlate, localReservation.carModel);
@@ -563,7 +583,7 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
     ...prev, carModel: car.modelName, licensePlate: car.licensePlate, ...(car.transmission ? { transmission: car.transmission } : {}), ...(car.sippCode ? { sippCode: car.sippCode } : {}),
   }));
   /** New extras keep the rental price as it is: the booking total moves by the extras' difference only. */
-  const setExtras = (list: ReservationExtra[]) => isPickupEditable && setLocalReservation(prev => {
+  const setExtras = (list: ReservationExtra[]) => (isPickupEditable || extrasOnRent) && setLocalReservation(prev => {
     const days = calculateDaysWithGrace(prev.startDate, prev.endDate);
     const sum = (l: ReservationExtra[]) => l.reduce((t, e) => (e.isComplementary ? t : t + (e.dailyPrice || 0) * days), 0);
     const base = prev.baseAmount ?? ((prev.amount || 0) - sum(prev.extras || []));
@@ -573,7 +593,7 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
   const handleFieldChange = (field: keyof Reservation, value: any) => {
     const isEditable = viewMode === 'pickup' ? isPickupEditable : isDropoffEditable;
     const notesAreEditable = (field === 'pickupNotes' && isPickupEditable) || (field === 'dropOffNotes' && !localReservation.dropOffCompleted);
-    if (!isEditable && !notesAreEditable) return;
+    if (!isEditable && !notesAreEditable && !(canAmend && AMEND_FIELDS.includes(field))) return;
     if (field === 'authNumber' && value) {
       setLocalReservation(prev => ({ ...prev, authNumber: value, pickupPaymentCollected: true }));
     } else {
@@ -637,14 +657,7 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
         alert("Choose whether this booking is prepaid or pay on arrival (Charges & payment step).");
         return;
       }
-      if (!counterMethodOk) {
-        alert(`This booking is prepaid, but ${formatCurrency(pay.toCollect)} for extras and upgrades must be collected. Record the payment method (Charges & payment step).`);
-        return;
-      }
-      if (!pay.depositHeld) {
-        alert(`Hold the security deposit of ${formatCurrency(pay.deposit)}: choose how it is held (Charges & payment step).`);
-        return;
-      }
+      // Card details, payment method, deposit hold and auth codes are optional: they can be added after check-out.
       const paperPickup = needsPaperSignatures('pickup');
       if (paperPickup === null) return;
 
@@ -849,11 +862,48 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
         agreementEmails: [...(r.agreementEmails || []), { to, kind, sentAt }],
         ...(rc ? { returnCharges: { ...rc, emails: [...(rc.emails || []), { to, sentAt }] } } : {}),
       };
-      setLocalReservation(withLog);
+      // Only the email log is taken over, so check-in entries made meanwhile stay on screen.
+      setLocalReservation(prev => ({ ...prev, agreementEmails: withLog.agreementEmails, ...(rc ? { returnCharges: withLog.returnCharges } : {}) }));
       onUpdate(withLog);
+      return true;
     } else {
       setEmailState({ status: outcome.reason === 'unconfigured' ? 'unconfigured' : 'failed', to, message: outcome.message });
+      return false;
     }
+  };
+
+  // ---- Changes after check-out ("Save changes") ----
+  const amendedKeys = AMEND_SAVED.filter(k => JSON.stringify(localReservation[k] ?? null) !== JSON.stringify(savedBase[k] ?? null));
+  const amendDirty = canAmend && amendedKeys.length > 0;
+  const [amendBusy, setAmendBusy] = useState(false);
+  const saveAmendments = async () => {
+    const email = (localReservation.customerEmail || '').trim();
+    if (!email) { alert('The customer email address is required: the agreement is emailed to the customer.'); return; }
+    if (!/^\S+@\S+\.\S+$/.test(email)) { alert('The customer email address is not valid. Please correct it.'); return; }
+    const picked = Object.fromEntries(AMEND_SAVED.map(k => [k, localReservation[k]])) as Partial<Reservation>;
+    const next: Reservation = { ...savedBase, ...picked, customerEmail: email };
+    const labels = Array.from(new Set(amendedKeys.map(k => AMEND_LABEL[k]).filter(Boolean)));
+    const oldEmail = (savedBase.customerEmail || '').trim();
+    const emailChanged = email.toLowerCase() !== oldEmail.toLowerCase();
+    onUpdate(next);
+    setSavedBase(next);
+    setLocalReservation(prev => ({ ...prev, ...picked, customerEmail: email }));
+    recordActivity('AGREEMENT_UPDATED', 'agreement', `Updated the rental agreement for ${next.personName}: ${labels.join(', ') || 'details'}`, next.bookingId,
+      emailChanged ? `Email ${oldEmail || '(none)'} → ${email}` : undefined);
+    const ask = emailChanged
+      ? `Saved. The email address is now ${email}.\n\nSend the updated agreement and the receipt to ${email} now?`
+      : `Saved.\n\nSend the updated agreement and the receipt to ${email}?`;
+    if (!window.confirm(ask)) return;
+    setAmendBusy(true);
+    const kind = next.dropOffCompleted ? 'checkin' : 'checkout';
+    const [agreementSent, receipt] = await Promise.all([
+      emailAgreement(next, kind),
+      sendCustomerEmail(receiptEmailPayload(next, companyDetails, sources, email)).catch(() => ({ ok: false } as { ok: boolean; reason?: string; message?: string })),
+    ]);
+    setAmendBusy(false);
+    if (agreementSent && receipt.ok) alert(`The updated agreement and the receipt were emailed to ${email}.`);
+    else if ((receipt as { reason?: string }).reason === 'unconfigured') alert('Email is not set up yet (Email Settings), so nothing was sent. The changes are saved.');
+    else alert(`${agreementSent ? 'The agreement was sent' : 'The agreement could not be sent'}; ${receipt.ok ? 'the receipt was sent' : 'the receipt could not be sent'} to ${email}. The changes are saved.`);
   };
 
   // Building the PDFs keeps the browser busy, so it starts only once the success screen is on show.
@@ -1192,7 +1242,9 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
   const kmOutValid = localReservation.pickupKmOut !== undefined && localReservation.pickupKmOut !== null && localReservation.pickupKmOut >= 0;
   const kmInValid = localReservation.dropOffKmIn !== undefined && localReservation.dropOffKmIn !== null && localReservation.dropOffKmIn >= 0
     && !(localReservation.pickupKmOut !== undefined && localReservation.pickupKmOut !== null && localReservation.dropOffKmIn < localReservation.pickupKmOut);
-  const pickupAuthOk = !payUnset && counterMethodOk && pay.depositHeld;
+  const pickupAuthOk = !payUnset;
+  // Recorded or not, these never block check-out; the payment step lists what can still be added.
+  const payDetailsMissing = [!counterMethodOk && 'payment method', !pay.depositHeld && 'deposit hold'].filter(Boolean).join(' and ');
   // Authorisation codes are optional; the payment step only flags them as not recorded.
   const authMissing = (isPayOnArrival || (pay.toCollect > 0 && localReservation.paymentMethod === 'card')) && !localReservation.authNumber?.trim();
   const authNote = [authMissing && 'payment auth code', pay.depositAuthMissing && 'deposit pre-auth code'].filter(Boolean).join(' and ');
@@ -1210,7 +1262,7 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
     { key: 'inspection', label: 'Inspection checklist', done: pickupClosed || countChecked(localReservation.pickupChecklist) === checklistItems.length, hint: `${countChecked(localReservation.pickupChecklist)} of ${checklistItems.length} confirmed` },
     { key: 'damage', label: 'Damage', done: pickupClosed || !!visited['pickup:damage'], hint: `${(localReservation.pickupDamageMarkers || []).length} marked` },
     { key: 'fuel', label: 'Fuel & mileage', done: pickupClosed || (kmOutValid && localReservation.pickupFuelLevel !== undefined), hint: kmOutValid ? 'Fuel level not set' : 'Odometer out required' },
-    { key: 'payment', label: 'Charges & payment', done: pickupClosed || (pickupAuthOk && !!visited['pickup:payment']), hint: payUnset ? 'Choose prepaid or pay on arrival' : pickupAuthOk ? `${formatCurrency(pay.toCollect)} to collect · deposit ${pay.deposit > 0 ? 'held' : 'none'}${authNote ? ` · no ${authNote}` : ''}` : !pay.depositHeld && counterMethodOk ? 'Deposit hold method required' : 'Payment method required' },
+    { key: 'payment', label: 'Charges & payment', done: pickupClosed || (pickupAuthOk && !!visited['pickup:payment']), hint: payUnset ? 'Choose prepaid or pay on arrival' : `${formatCurrency(pay.toCollect)} to collect · deposit ${pay.deposit <= 0 ? 'none' : pay.depositHeld ? 'held' : 'not recorded'}${payDetailsMissing || authNote ? ` · no ${[payDetailsMissing, authNote].filter(Boolean).join(', ')} yet (optional)` : ''}` },
     { key: 'signatures', label: 'Signatures', done: pickupClosed || signedCount(localReservation.pickupRenterSignature, localReservation.pickupAgentSignature) === 2 || !!localReservation.pickupSignOnPaper,
       hint: localReservation.pickupSignOnPaper && signedCount(localReservation.pickupRenterSignature, localReservation.pickupAgentSignature) < 2 ? 'Signed on the printed copy' : `${signedCount(localReservation.pickupRenterSignature, localReservation.pickupAgentSignature)} of 2 signed · optional` },
   ];
@@ -1298,7 +1350,7 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold text-slate-900 truncate">{reservation.personName}</p>
             <p className="text-xs text-slate-500 tabular-nums">{reservation.contactNumber || 'No phone'}</p>
-            <div className="mt-2">{renderTextField('Email *', localReservation.customerEmail || '', val => handleFieldChange('customerEmail', val), isPickupEditable, true)}</div>
+            <div className="mt-2">{renderTextField('Email *', localReservation.customerEmail || '', val => handleFieldChange('customerEmail', val), isPickupEditable || canAmend, true)}</div>
           </div>
         </div>
         <div className="space-y-2.5 min-w-0">
@@ -1324,6 +1376,7 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
         driver={localReservation.driver || {}}
         additionalDrivers={localReservation.additionalDrivers || []}
         editable={isPickupEditable}
+        fillMissing={canAmend ? { driver: savedBase.driver || {}, additionalDrivers: savedBase.additionalDrivers || [] } : undefined}
         rentalEnd={localReservation.endDate}
         onChange={d => handleFieldChange('driver', d)}
         onChangeAdditional={list => handleFieldChange('additionalDrivers', list)}
@@ -1450,15 +1503,15 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
           ])
           : isPayOnArrival ? box('warn', <>Pay on arrival: collect {formatCurrency(pay.total)} now <span className="ar-ui font-normal" dir="rtl">· الدفع عند الاستلام</span></>, [
             <>Take payment for the rental{extrasCharged ? ', extras' : ''}{pay.upgrades ? ' and upgrade' : ''}: <b>{formatCurrency(pay.total)}</b>.</>,
-            'Record the payment method, card last 4 digits and the terminal authorisation number (required).',
-            ...(deposit ? [<>Hold the refundable security deposit of <b>{formatCurrency(deposit)}</b> (required).</>] : []),
+            'Record the payment method, card last 4 digits and authorisation number now or later: none of them is needed to print or complete the agreement.',
+            ...(deposit ? [<>Hold the refundable security deposit of <b>{formatCurrency(deposit)}</b>. How it is held can be recorded now or later.</>] : []),
           ])
           : payType ? box('ok', <>Prepaid{src ? ` via ${src.name}` : ''}: do not charge the rental again <span className="ar-ui font-normal" dir="rtl">· مدفوع مسبقاً</span></>, [
             <>The rental of <b>{formatCurrency(pay.rental)}</b> was paid to {src?.name || 'the partner'}. Do not charge it to the customer.</>,
             pay.toCollect > 0
-              ? <>Collect only the extras{pay.upgrades ? ' and upgrade' : ''} added for this rental: <b>{formatCurrency(pay.toCollect)}</b>. Record the payment method (and the authorisation number for a card).</>
+              ? <>Collect only the extras{pay.upgrades ? ' and upgrade' : ''} added for this rental: <b>{formatCurrency(pay.toCollect)}</b>. Record the payment method (and the authorisation number for a card) now or later.</>
               : 'Nothing else to collect: no extras or upgrades.',
-            ...(deposit ? [<>Hold the refundable security deposit of <b>{formatCurrency(deposit)}</b> (required).</>] : []),
+            ...(deposit ? [<>Hold the refundable security deposit of <b>{formatCurrency(deposit)}</b>. How it is held can be recorded now or later.</>] : []),
           ]) : null}
       </div>
     );
@@ -1467,10 +1520,10 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
   const renderPaymentStep = (stepNo: number) => (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
       {renderPaymentAction()}
-      {(isPickupEditable || (localReservation.extras || []).length > 0) && (
+      {(isPickupEditable || extrasOnRent || (localReservation.extras || []).length > 0) && (
         <div className="md:col-span-2">
-          <StepSection title="Extras & add-ons" subtitle={isPickupEditable ? 'Add what the customer asks for at the counter: child seat, additional driver, GPS…' : 'Extras on this rental'}>
-            <ExtrasEditor extras={localReservation.extras || []} catalogue={availableExtras} days={rentalDays} editable={isPickupEditable} onChange={setExtras} />
+          <StepSection title="Extras & add-ons" subtitle={isPickupEditable ? 'Add what the customer asks for at the counter: child seat, additional driver, GPS…' : extrasOnRent ? 'Add or remove extras during the rental. The booking total is updated when you save.' : 'Extras on this rental'}>
+            <ExtrasEditor extras={localReservation.extras || []} catalogue={availableExtras} days={rentalDays} editable={isPickupEditable || extrasOnRent} onChange={setExtras} />
           </StepSection>
         </div>
       )}
@@ -1484,7 +1537,7 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
         <div className={`rounded-lg border px-3 py-2.5 space-y-2 ${pay.deposit > 0 && !pay.depositHeld ? 'border-amber-300 bg-amber-50/70' : 'border-indigo-200 bg-indigo-50/60'}`}>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-[13px] font-semibold text-slate-900"><Bi en="Security deposit" />{pay.deposit > 0 && <span className="text-rose-500"> *</span>}</p>
+              <p className="text-[13px] font-semibold text-slate-900"><Bi en="Security deposit" /></p>
               <p className="text-xs text-slate-500">{pay.deposit > 0 ? 'Hold it for every booking, prepaid or pay on arrival. Refundable: release it after the return inspection.' : 'No deposit for this car.'}{depositSource ? ` From the fleet: ${depositSource}.` : ''}</p>
             </div>
             <span className="text-base font-semibold tabular-nums text-slate-900 shrink-0">{formatCurrency(pay.deposit)}</span>
@@ -1505,7 +1558,25 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
               </div>
             </div>
           ) : (
-            <p className="text-xs text-slate-700">{localReservation.depositHoldMethod ? `Held by ${DEPOSIT_HOLD_LABEL[localReservation.depositHoldMethod].toLowerCase()}${localReservation.depositAuthNumber ? ` · auth ${localReservation.depositAuthNumber}` : ''}` : 'Hold not recorded'}</p>
+            <>
+              {canAmend && missingSaved('depositHoldMethod') && (
+                <div>
+                  <label className={labelCls}>Held by <span className="font-normal text-slate-400">optional</span></label>
+                  <select value={localReservation.depositHoldMethod || ''} onChange={e => handleFieldChange('depositHoldMethod', e.target.value || undefined)} className={inputCls}>
+                    <option value="">Choose</option>
+                    <option value="card">{DEPOSIT_HOLD_LABEL.card}</option>
+                    <option value="cash">{DEPOSIT_HOLD_LABEL.cash}</option>
+                  </select>
+                </div>
+              )}
+              <p className="text-xs text-slate-700">{localReservation.depositHoldMethod ? `Held by ${DEPOSIT_HOLD_LABEL[localReservation.depositHoldMethod].toLowerCase()}${localReservation.depositAuthNumber && !missingSaved('depositAuthNumber') ? ` · auth ${localReservation.depositAuthNumber}` : ''}` : 'Hold not recorded'}</p>
+              {canAmend && localReservation.depositHoldMethod === 'card' && missingSaved('depositAuthNumber') && (
+                <div>
+                  <label className={labelCls}>Pre-authorisation no. <span className="font-normal text-slate-400">optional</span></label>
+                  <input type="text" value={localReservation.depositAuthNumber || ''} onChange={e => handleFieldChange('depositAuthNumber', e.target.value || undefined)} className={`${inputCls} font-mono`} placeholder="Hold auth code" />
+                </div>
+              )}
+            </>
           ))}
         </div>
         {isPickupEditable ? (
@@ -1539,9 +1610,37 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
           </>
         ) : (
           <>
-            <InfoPair label="Payment method" value={localReservation.paymentMethod ? ({ card: 'Card', cash: 'Cash', bank_transfer: 'Bank transfer', prepaid: 'Prepaid by partner' } as Record<string, string>)[localReservation.paymentMethod] : undefined} />
-            <InfoPair label="Authorisation" value={localReservation.authNumber ? <span className="font-mono">{localReservation.authNumber}</span> : undefined} />
-            <InfoPair label="Amount charged" value={localReservation.finalAmountCharged ? formatCurrency(localReservation.finalAmountCharged) : undefined} />
+            {canAmend && missingSaved('paymentMethod') ? (
+              <div>
+                <label className={labelCls}><Bi en="Payment method" /></label>
+                <select value={localReservation.paymentMethod || ''} onChange={e => handleFieldChange('paymentMethod', e.target.value || undefined)} className={inputCls}>
+                  <option value="">Not set</option>
+                  <option value="card">Card</option>
+                  <option value="cash">Cash</option>
+                  <option value="bank_transfer">Bank transfer</option>
+                  <option value="prepaid">Prepaid by partner</option>
+                </select>
+              </div>
+            ) : <InfoPair label="Payment method" value={localReservation.paymentMethod ? ({ card: 'Card', cash: 'Cash', bank_transfer: 'Bank transfer', prepaid: 'Prepaid by partner' } as Record<string, string>)[localReservation.paymentMethod] : undefined} />}
+            {canAmend && localReservation.paymentMethod === 'card' && missingSaved('cardNumber') && (
+              <div>
+                <label className={labelCls}><Bi en="Card last 4 digits" /></label>
+                <input type="text" inputMode="numeric" maxLength={4} value={(localReservation.cardNumber || '').replace(/\D/g, '').slice(-4)}
+                  onChange={e => handleFieldChange('cardNumber', e.target.value.replace(/\D/g, '').slice(0, 4) || undefined)} className={`${inputCls} font-mono tabular-nums`} placeholder="4421" />
+              </div>
+            )}
+            {canAmend && missingSaved('authNumber') ? (
+              <div>
+                <label className={labelCls}>Authorisation number <span className="font-normal text-slate-400">optional</span></label>
+                <input type="text" value={localReservation.authNumber || ''} onChange={e => handleFieldChange('authNumber', e.target.value)} className={`${inputCls} font-mono`} placeholder="Card terminal auth code" />
+              </div>
+            ) : <InfoPair label="Authorisation" value={localReservation.authNumber ? <span className="font-mono">{localReservation.authNumber}</span> : undefined} />}
+            {canAmend && missingSaved('finalAmountCharged') ? (
+              <div>
+                <label className={labelCls}><Bi en="Amount charged ($)" /></label>
+                <input type="number" step="0.01" value={localReservation.finalAmountCharged || ''} onChange={e => handleFieldChange('finalAmountCharged', parseFloat(e.target.value) || undefined)} className={`${inputCls} tabular-nums`} placeholder={pay.toCollect.toFixed(2)} />
+              </div>
+            ) : <InfoPair label="Amount charged" value={localReservation.finalAmountCharged ? formatCurrency(localReservation.finalAmountCharged) : undefined} />}
           </>
         )}
       </InfoBlock>
@@ -1555,7 +1654,7 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
           <SectionLabel><Bi en="Renter" /></SectionLabel>
           <InfoPair label="Name" value={reservation.personName} />
           <InfoPair label="Phone" value={reservation.contactNumber} />
-          {renderTextField('Email *', localReservation.customerEmail || '', val => handleFieldChange('customerEmail', val), isPickupEditable, true)}
+          {renderTextField('Email *', localReservation.customerEmail || '', val => handleFieldChange('customerEmail', val), isPickupEditable || canAmend, true)}
           <SectionLabel className="pt-2"><Bi en="Vehicle" /></SectionLabel>
           <InfoPair label="Model" value={localReservation.carModel} />
           <InfoPair label="License plate" value={<span className="font-mono">{localReservation.licensePlate || '—'}</span>} />
@@ -1661,12 +1760,17 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
 
   const printButtons = (
     <div className="flex items-center gap-2">
+      {amendDirty && (
+        <Button variant="primary" onClick={saveAmendments} disabled={amendBusy} icon={CHECK_ICON}>
+          {amendBusy ? 'Sending…' : 'Save changes'}
+        </Button>
+      )}
       {localReservation.dropOffCompleted && (
         <Button variant="secondary" onClick={handlePrintTermination} icon={<PdfIcon className="w-4 h-4" />}>
           Termination
         </Button>
       )}
-      <Button variant={isWizard && !isLastStep ? 'secondary' : 'primary'} onClick={handleDownloadVoucherPDF} icon={<PdfIcon className="w-4 h-4" />}>
+      <Button variant={(isWizard && (!isLastStep || canComplete)) || amendDirty ? 'secondary' : 'primary'} onClick={handleDownloadVoucherPDF} icon={<PdfIcon className="w-4 h-4" />}>
         Print agreement
       </Button>
     </div>
@@ -1856,7 +1960,7 @@ const Voucher: React.FC<VoucherProps> = ({ reservation, sources, rentalLocations
               {isWizard ? (
                 <>
                   <Button variant="ghost" onClick={() => goToStep(activeIndex - 1)} disabled={activeIndex === 0}><Bi en="Back" className="hidden sm:inline" /></Button>
-                  {!canComplete && printButtons}
+                  {printButtons}
                   {!isLastStep ? (
                     <Button variant={canComplete ? 'primary' : 'secondary'} onClick={() => goToStep(activeIndex + 1)}>
                       Next<span lang="ar" dir="rtl" className="ar-ui ml-1.5 !text-current opacity-80">التالي</span><span className="hidden sm:inline font-normal opacity-80">&nbsp;· {flowSteps[activeIndex + 1]?.label}</span>
