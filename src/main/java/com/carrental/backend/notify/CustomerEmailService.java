@@ -269,8 +269,15 @@ public class CustomerEmailService {
                 + "<tr><td colspan=\"2\" style=\"padding:12px 20px;background:#f7f8fa;border-bottom:1px solid #e3e7ed;border-radius:8px 8px 0 0;font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:" + NAVY + "\">Rental summary</td></tr>"
                 + rows + "</table>")
             + (blank(r.closing()) ? "" : "<p style=\"" + para + "\">" + esc(r.closing()) + "</p>")
-            + (ctaHref.isEmpty() || blank(r.ctaLabel()) ? "" : "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" align=\"center\" style=\"margin:8px auto 30px\"><tr><td style=\"background:" + NAVY + ";border-radius:6px\">"
-                + "<a href=\"" + esc(ctaHref) + "\" style=\"display:inline-block;padding:14px 30px;font-size:14px;font-weight:600;letter-spacing:.02em;color:#ffffff;text-decoration:none\">" + esc(r.ctaLabel()) + "</a></td></tr></table>")
+            + (blank(r.rateTitle())
+                ? (ctaHref.isEmpty() || blank(r.ctaLabel()) ? "" : button(ctaHref, r.ctaLabel(), "8px auto 30px"))
+                // Review panel: gold stars, title, one line, and the button to the review page
+                : "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin:12px 0 32px;background:#fbf8f1;border:1px solid #eadfc4;border-radius:10px\"><tr><td align=\"center\" style=\"padding:28px 24px 26px\">"
+                    + "<div style=\"font-size:22px;letter-spacing:6px;color:" + GOLD + ";line-height:1\">&#9733;&#9733;&#9733;&#9733;&#9733;</div>"
+                    + "<div style=\"margin:14px 0 0;font-family:" + SERIF + ";font-size:21px;line-height:1.35;color:" + NAVY + "\">" + esc(r.rateTitle()) + "</div>"
+                    + (blank(r.rateText()) ? "" : "<div style=\"margin:8px auto 0;max-width:420px;font-size:14px;line-height:1.65;color:#4b5563\">" + esc(r.rateText()) + "</div>")
+                    + (ctaHref.isEmpty() || blank(r.ctaLabel()) ? "" : button(ctaHref, r.ctaLabel(), "20px auto 0"))
+                    + "</td></tr></table>")
             + "<p style=\"margin:8px 0 0;font-size:15px;line-height:1.7;color:#374151\">With warm regards,</p>"
             + "<p style=\"margin:6px 0 0;font-family:" + SERIF + ";font-size:18px;color:" + NAVY + "\">" + esc(blank(r.signature()) ? "Customer Experience Team" : r.signature()) + "</p>"
             + "<p style=\"margin:2px 0 0;font-size:13px;color:#6b7280\">" + esc(company) + "</p>"
@@ -297,6 +304,11 @@ public class CustomerEmailService {
             + "</table></td></tr></table></body></html>";
     }
 
+    private static String button(String href, String label, String margin) {
+        return "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" align=\"center\" style=\"margin:" + margin + "\"><tr><td style=\"background:" + NAVY + ";border-radius:6px\">"
+            + "<a href=\"" + esc(href) + "\" style=\"display:inline-block;padding:13px 30px;font-size:14px;font-weight:600;letter-spacing:.02em;color:#ffffff;text-decoration:none\">" + esc(label) + "</a></td></tr></table>";
+    }
+
     private static String supportRow(String label, String value) {
         return "<tr><td style=\"padding:3px 16px 3px 0;font-size:13px;color:#6b7280;width:56px\">" + label + "</td><td style=\"padding:3px 0;font-size:13px;color:#111827\">" + value + "</td></tr>";
     }
@@ -319,7 +331,8 @@ public class CustomerEmailService {
             r.attachments().stream().filter(a -> a != null && !blank(a.fileName())).forEach(a -> sb.append("- ").append(a.fileName()).append('\n'));
         }
         if (!blank(r.closing())) sb.append('\n').append(r.closing()).append('\n');
-        if (!blank(r.ctaLabel()) && !blank(r.ctaUrl())) sb.append('\n').append(r.ctaLabel()).append(": ").append(r.ctaUrl()).append('\n');
+        if (!blank(r.rateTitle())) sb.append('\n').append(r.rateTitle()).append(blank(r.rateText()) ? "" : "\n" + r.rateText()).append('\n');
+        if (!blank(r.ctaLabel()) && !blank(r.ctaUrl())) sb.append(blank(r.rateTitle()) ? "\n" : "").append(r.ctaLabel()).append(": ").append(r.ctaUrl()).append('\n');
         boolean letter = "letter".equals(r.layout());
         sb.append(letter ? "\nWith warm regards,\n" : "\nKind regards,\n").append(blank(r.signature()) ? (letter ? "Customer Experience Team" : "Customer Service Team") : r.signature()).append('\n').append(company).append('\n');
         if (!blank(r.arabic())) sb.append('\n').append(r.arabic()).append('\n');
