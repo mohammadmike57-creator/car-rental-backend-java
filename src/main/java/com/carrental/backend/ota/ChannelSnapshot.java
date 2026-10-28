@@ -20,7 +20,21 @@ public class ChannelSnapshot {
     public ChannelSnapshot(JsonNode channel, JsonNode fleet, JsonNode stopSales) {
         this.channel = channel;
         this.fleet = fleet == null || !fleet.isArray() ? com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.arrayNode() : fleet;
-        this.stopSales = stopSales == null || !stopSales.isArray() ? com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.arrayNode() : stopSales;
+        this.stopSales = forChannel(stopSales, text(channel, "id", ""));
+    }
+
+    /** Stop sales for every channel, plus those that name this channel in channelIds. */
+    static JsonNode forChannel(JsonNode stopSales, String channelId) {
+        var out = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.arrayNode();
+        if (stopSales == null || !stopSales.isArray()) return out;
+        for (JsonNode s : stopSales) {
+            JsonNode ids = s.get("channelIds");
+            boolean all = ids == null || !ids.isArray() || ids.isEmpty();
+            boolean named = false;
+            if (!all) for (JsonNode id : ids) if (channelId.equals(id.asText())) { named = true; break; }
+            if (all || named) out.add(s);
+        }
+        return out;
     }
 
     public JsonNode raw() { return channel; }
