@@ -3,6 +3,7 @@ package com.carrental.backend.ota;
 import com.carrental.backend.ota.ChannelError.ChannelException;
 import com.carrental.backend.ota.ChannelModels.*;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -165,6 +166,21 @@ public class OtaBookingController {
             default -> throw new IllegalArgumentException(rq);
         };
         return run(channel, body, key, http, type, errorRoot, action);
+    }
+
+    /** Any other message name (or a GET on a message) still gets an OTA error the broker's parser can read, not a web error page. */
+    @RequestMapping("/{message:OTA_[A-Za-z]+}")
+    public ResponseEntity<String> unknownMessage(@PathVariable String channel, @PathVariable String message, HttpServletRequest http) {
+        boolean known = java.util.Set.of("OTA_VehLocSearch", "OTA_VehAvailRate", "OTA_VehRes", "OTA_VehRetRes", "OTA_VehResRetrieve", "OTA_VehModify",
+            "OTA_VehCancel", "OTA_VehRateRule", "OTA_VehLocDetail", "OTA_Ping").contains(message);
+        ChannelError.ChannelException e = ChannelError.INVALID_REQUEST.ex(known
+            ? message + " must be sent with HTTP POST"
+            : "Unknown message " + message + ". Supported: OTA_VehLocSearch, OTA_VehLocDetail, OTA_VehAvailRate, OTA_VehRateRule, OTA_VehRes, "
+                + "OTA_VehRetRes, OTA_VehModify, OTA_VehCancel, OTA_Ping");
+        String rid = http.getHeader("X-Request-ID");
+        if (rid == null || rid.isBlank()) rid = java.util.UUID.randomUUID().toString();
+        return ResponseEntity.status(known ? HttpStatus.METHOD_NOT_ALLOWED : HttpStatus.NOT_FOUND).contentType(XML).header("X-Request-ID", rid)
+            .body(OtaBookingXml.error(message + "RS", null, true, e, rid));
     }
 
     /** When the partner sends the surname (as OTA does), it must match the booking. */
