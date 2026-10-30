@@ -690,4 +690,213 @@ class ChannelGatewayIntegrationTest {
             .andExpect(jsonPath("$.status").value(200)).andExpect(jsonPath("$.body").value(containsString("<EchoData>pong</EchoData>")));
         mvc.perform(post("/api/channels/agg-1/console").contentType(MediaType.APPLICATION_JSON).content("{}")).andExpect(status().isUnauthorized());
     }
+
+    // ============================================================ acceptance cases
+
+    static String direct(String from, String to, String ref, String surname) {
+        return """
+            <OTA_VehResRQ xmlns="http://www.opentravel.org/OTA/2003/05"><VehResRQCore>
+              <VehRentalCore PickUpDateTime="%s" ReturnDateTime="%s"><PickUpLocation LocationCode="AMM"/></VehRentalCore>
+              <Customer><Primary><PersonName><GivenName>Jane</GivenName><Surname>%s</Surname></PersonName></Primary></Customer><VehPref Code="SDAR"/></VehResRQCore>
+              <VehResRQInfo><TPA_Extensions><BrokerReference>%s</BrokerReference></TPA_Extensions></VehResRQInfo></OTA_VehResRQ>""".formatted(from, to, surname, ref);
+    }
+
+    static String availAt(String from, String to) {
+        return """
+            <OTA_VehAvailRateRQ xmlns="http://www.opentravel.org/OTA/2003/05"><VehAvailRQCore>
+              <VehRentalCore PickUpDateTime="%s" ReturnDateTime="%s"><PickUpLocation LocationCode="AMM"/><ReturnLocation LocationCode="AMM"/></VehRentalCore>
+              <DriverType Age="35"/></VehAvailRQCore></OTA_VehAvailRateRQ>""".formatted(from, to);
+    }
+
+    /** True when the SDAR group (the only Corolla) is offered as available. */
+    static boolean sdarOpen(String xml) {
+        int i = xml.indexOf("Code=\"SDAR\"");
+        assertTrue(i > 0, xml);
+        int start = xml.lastIndexOf("<VehAvail>", i), end = xml.indexOf("</VehAvail>", i);
+        return !xml.substring(start, end).contains("Status=\"Closed\"");
+    }
+
+    /** Puts a booking of the Corolla (SD-1) straight into the reservations list, as staff would. */
+    void stateBooking(String id, String start, String end, boolean out, boolean back) throws Exception {
+        ObjectNode r = M.createObjectNode().put("id", id).put("bookingId", id).put("personName", "Walk In").put("status", "CONFIRMED")
+            .put("startDate", start).put("endDate", end).put("carModel", "Toyota Corolla").put("licensePlate", "SD-1")
+            .put("voucherSubmitted", out).put("dropOffCompleted", back);
+        String y = start.substring(0, 4), m = java.time.Month.of(Integer.parseInt(start.substring(5, 7))).getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.ENGLISH);
+        stateService.applyPatch(M.writeValueAsString(M.createObjectNode().set("ops", M.createArrayNode().add(
+            M.createObjectNode().put("op", "upsertReservation").put("year", y).put("month", m).set("reservation", r)))));
+    }
+
+    @Test
+    void twoBrokersRacingForTheLastCarOnlyOneWins() throws Exception {
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        var go = new java.util.concurrent.CountDownLatch(1);
+        List<java.util.concurrent.Future<String>> results = new java.util.ArrayList<>();
+        for (String ref : List.of("RACE-A", "RACE-B")) {
+            results.add(pool.submit(() -> { go.await(); return send("/ota/v1/BKG/OTA_VehRes", direct(Y + "-05-01T10:00:00", Y + "-05-04T10:00:00", ref, "Roe")); }));
+        }
+        go.countDown();
+        int ok = 0, sold = 0;
+        for (var f : results) {
+            String r = f.get();
+            if (r.contains("<Success/>")) ok++;
+            if (r.contains("NO_AVAILABILITY")) sold++;
+        }
+        pool.shutdown();
+        assertEquals(1, ok, "exactly one booking confirmed");
+        assertEquals(1, sold, "the other is refused");
+        assertEquals(1, reservations().path(Y).path("May").size());
+    }
+
+    @Test
+    void sameKeyWithDifferentDetailsIsAConflict() throws Exception {
+        String first = send("/ota/v1/BKG/OTA_VehRes", direct(Y + "-05-01T10:00:00", Y + "-05-04T10:00:00", "K-1", "Roe"), "Idempotency-Key", "idem-x");
+        assertTrue(first.contains("<Success/>"), first);
+        String retry = send("/ota/v1/BKG/OTA_VehRes", direct(Y + "-05-01T10:00:00", Y + "-05-04T10:00:00", "K-1", "Roe"), "Idempotency-Key", "idem-x");
+        assertTrue(retry.contains("<Success/>"), "lost response: the retry returns the same booking");
+        String changed = send("/ota/v1/BKG/OTA_VehRes", direct(Y + "-05-01T10:00:00", Y + "-05-05T10:00:00", "K-1", "Roe"), "Idempotency-Key", "idem-x");
+        assertTrue(changed.contains("DUPLICATE_REFERENCE"), changed);
+        assertEquals(1, reservations().path(Y).path("May").size());
+    }
+
+    @Test
+    void expiredOfferAndPriceChangedBeforeBooking() throws Exception {
+        String offer = firstOffer(send("/ota/v1/BKG/OTA_VehAvailRate", avail("E1")));
+        ChannelOffer o = offers.findById(offer).orElseThrow();
+        o.setExpiresAt(java.time.Instant.now().minusSeconds(60));
+        offers.save(o);
+        assertTrue(send("/ota/v1/BKG/OTA_VehRes", vehRes(offer, "EXP-1")).contains("OFFER_EXPIRED"));
+
+        String offer2 = firstOffer(send("/ota/v1/BKG/OTA_VehAvailRate", avail("E2")));
+        // New rates published between the search and the booking.
+        rules((agg, r) -> ((ObjectNode) agg.path("ratePlanHistory").get(0).path("ratePlans").get(0).path("sippRates").get(0).path("tiers").get(1)).put("dailyPrice", 45));
+        String r = send("/ota/v1/BKG/OTA_VehRes", vehRes(offer2, "EXP-2"));
+        assertTrue(r.contains("PRICE_CHANGED"), r);
+        assertEquals(0, reservations().path(Y).path("May").size(), "nothing booked");
+    }
+
+    @Test
+    void failedModificationKeepsTheOriginalAndVersionsCountChanges() throws Exception {
+        String r = send("/ota/v1/BKG/OTA_VehRes", direct(Y + "-05-01T10:00:00", Y + "-05-04T10:00:00", "V-1", "Roe"));
+        String number = r.substring(r.indexOf("ID=\"RSV-") + 4, r.indexOf('"', r.indexOf("ID=\"RSV-") + 4));
+        JsonNode before = reservations().path(Y).path("May").get(0);
+        String bad = send("/ota/v1/BKG/OTA_VehModify", """
+            <OTA_VehModifyRQ xmlns="http://www.opentravel.org/OTA/2003/05"><VehModifyRQCore ModifyType="Modify"><UniqueID Type="14" ID="%s"/>
+              <VehRentalCore PickUpDateTime="%s-05-01T10:00:00" ReturnDateTime="%s-05-03T10:00:00"><PickUpLocation LocationCode="XXX"/></VehRentalCore></VehModifyRQCore></OTA_VehModifyRQ>""".formatted(number, Y, Y));
+        assertTrue(bad.contains("INVALID_LOCATION"), bad);
+        JsonNode after = reservations().path(Y).path("May").get(0);
+        assertEquals(before.path("endDate").asText(), after.path("endDate").asText());
+        assertEquals(before.path("amount").asDouble(), after.path("amount").asDouble());
+        assertEquals(1, bookings.findByReservationNumber(number).orElseThrow().currentVersion(), "a failed change is not a new version");
+
+        send("/ota/v1/BKG/OTA_VehModify", """
+            <OTA_VehModifyRQ xmlns="http://www.opentravel.org/OTA/2003/05"><VehModifyRQCore ModifyType="Modify"><UniqueID Type="14" ID="%s"/>
+              <VehRentalCore PickUpDateTime="%s-05-01T10:00:00" ReturnDateTime="%s-05-05T10:00:00"/></VehModifyRQCore></OTA_VehModifyRQ>""".formatted(number, Y, Y));
+        String cancel = """
+            <OTA_VehCancelRQ xmlns="http://www.opentravel.org/OTA/2003/05"><VehCancelRQCore CancelType="Cancel"><UniqueID Type="14" ID="%s"/>
+              <PersonName><Surname>Roe</Surname></PersonName></VehCancelRQCore></OTA_VehCancelRQ>""".formatted(number);
+        send("/ota/v1/BKG/OTA_VehCancel", cancel);
+        send("/ota/v1/BKG/OTA_VehCancel", cancel);
+        assertEquals(3, bookings.findByReservationNumber(number).orElseThrow().currentVersion(), "created 1, modified 2, cancelled 3; cancelling again changes nothing");
+        List<Integer> versions = webhooks.findAll().stream().filter(d -> number.equals(d.getReservationNumber()))
+            .map(d -> { try { return M.readTree(d.getPayload()).path("reservation_version").asInt(); } catch (Exception e) { return -1; } }).toList();
+        assertEquals(List.of(1, 1, 2, 3), versions, "every update carries the booking version");
+    }
+
+    @Test
+    void oneBrokerCannotSeeAnothersBookings() throws Exception {
+        rules((agg, r) -> {});
+        ArrayNode aggs = (ArrayNode) M.readTree(stateService.getFullState()).path("aggregators");
+        ObjectNode other = aggs.get(0).deepCopy();
+        other.put("id", "agg-2").put("name", "Other Broker").put("channelCode", "OTH").put("feedKeyHash", PartnerKeyVerifier.sha256Hex("other-key"));
+        aggs.add(other);
+        stateService.applyPatch(M.writeValueAsString(M.createObjectNode().set("ops", M.createArrayNode()
+            .add(M.createObjectNode().put("op", "set").put("key", "aggregators").set("value", aggs)))));
+        String r = send("/ota/v1/BKG/OTA_VehRes", direct(Y + "-05-01T10:00:00", Y + "-05-04T10:00:00", "ISO-1", "Roe"));
+        String number = r.substring(r.indexOf("ID=\"RSV-") + 4, r.indexOf('"', r.indexOf("ID=\"RSV-") + 4));
+        String ret = """
+            <OTA_VehRetResRQ xmlns="http://www.opentravel.org/OTA/2003/05"><VehRetResRQCore><UniqueID Type="14" ID="%s"/>
+              <PersonName><Surname>Roe</Surname></PersonName></VehRetResRQCore></OTA_VehRetResRQ>""".formatted(number);
+        mvc.perform(post("/ota/v1/OTH/OTA_VehRetRes").header("X-Api-Key", "other-key").contentType(MediaType.APPLICATION_XML).content(ret))
+            .andExpect(status().isNotFound()).andExpect(content().string(containsString("RESERVATION_NOT_FOUND")));
+        mvc.perform(post("/ota/v1/OTH/OTA_VehCancel").header("X-Api-Key", "other-key").contentType(MediaType.APPLICATION_XML).content(ret.replace("VehRetRes", "VehCancel")))
+            .andExpect(status().isNotFound());
+        mvc.perform(post("/ota/v1/BKG/OTA_VehRetRes").header("X-Api-Key", "other-key").contentType(MediaType.APPLICATION_XML).content(ret))
+            .andExpect(status().isUnauthorized());
+        assertEquals("CONFIRMED", reservations().path(Y).path("May").get(0).path("status").asText());
+    }
+
+    @Test
+    void operationsNotAgreedWithTheBrokerAreRefused() throws Exception {
+        String r = send("/ota/v1/BKG/OTA_VehRes", direct(Y + "-05-01T10:00:00", Y + "-05-04T10:00:00", "OP-1", "Roe"));
+        String number = r.substring(r.indexOf("ID=\"RSV-") + 4, r.indexOf('"', r.indexOf("ID=\"RSV-") + 4));
+        rules((agg, rl) -> rl.putObject("operations").put("retrieve", false).put("modify", false).put("cancel", false));
+        mvc.perform(post("/ota/v1/BKG/OTA_VehModify").header("X-Api-Key", KEY).contentType(MediaType.APPLICATION_XML).content("""
+            <OTA_VehModifyRQ xmlns="http://www.opentravel.org/OTA/2003/05"><VehModifyRQCore ModifyType="Modify"><UniqueID Type="14" ID="%s"/>
+              <VehRentalCore PickUpDateTime="%s-05-01T10:00:00" ReturnDateTime="%s-05-05T10:00:00"/></VehModifyRQCore></OTA_VehModifyRQ>""".formatted(number, Y, Y)))
+            .andExpect(status().isConflict()).andExpect(content().string(containsString("MODIFICATION_NOT_ALLOWED")));
+        mvc.perform(post("/ota/v1/BKG/OTA_VehCancel").header("X-Api-Key", KEY).contentType(MediaType.APPLICATION_XML).content("""
+            <OTA_VehCancelRQ xmlns="http://www.opentravel.org/OTA/2003/05"><VehCancelRQCore CancelType="Cancel"><UniqueID Type="14" ID="%s"/></VehCancelRQCore></OTA_VehCancelRQ>""".formatted(number)))
+            .andExpect(status().isConflict()).andExpect(content().string(containsString("CANCELLATION_NOT_ALLOWED")));
+        mvc.perform(post("/ota/v1/BKG/OTA_VehRetRes").header("X-Api-Key", KEY).contentType(MediaType.APPLICATION_XML).content("""
+            <OTA_VehRetResRQ xmlns="http://www.opentravel.org/OTA/2003/05"><VehRetResRQCore><UniqueID Type="14" ID="%s"/></VehRetResRQCore></OTA_VehRetResRQ>""".formatted(number)))
+            .andExpect(status().isForbidden());
+        assertEquals("CONFIRMED", reservations().path(Y).path("May").get(0).path("status").asText(), "nothing changed");
+    }
+
+    @Test
+    void turnaroundTimeIsKeptBetweenRentals() throws Exception {
+        stateBooking("walk-1", Y + "-05-01T06:00", Y + "-05-01T09:00", false, false);
+        assertTrue(sdarOpen(send("/ota/v1/BKG/OTA_VehAvailRate", availAt(Y + "-05-01T10:00:00", Y + "-05-03T10:00:00"))), "back-to-back allowed without turnaround");
+        rules((agg, r) -> r.put("turnaroundMinutes", 120));
+        assertFalse(sdarOpen(send("/ota/v1/BKG/OTA_VehAvailRate", availAt(Y + "-05-01T10:00:00", Y + "-05-03T10:00:00"))), "2 h cleaning after the 09:00 return");
+        assertTrue(sdarOpen(send("/ota/v1/BKG/OTA_VehAvailRate", availAt(Y + "-05-01T11:00:00", Y + "-05-03T10:00:00"))));
+    }
+
+    @Test
+    void aCarNotBackYetStaysBusy() throws Exception {
+        java.time.LocalDateTime now = java.time.LocalDateTime.now(java.time.ZoneId.of("Asia/Amman")).withSecond(0).withNano(0);
+        rules((agg, r) -> {
+            r.put("overdueHoldHours", 72).put("minLeadHours", 0);
+            ((ObjectNode) agg.path("ratePlanHistory").get(0).path("ratePlans").get(0)).put("startDate", now.getYear() + "-01-01");
+            for (JsonNode l : r.path("locations")) ((ObjectNode) l).remove("openingHours");
+        });
+        String from = now.plusDays(1).toString() + ":00", to = now.plusDays(3).toString() + ":00";
+        // Went out last week, due back yesterday, not checked in.
+        stateBooking("late-1", now.minusDays(7).toString(), now.minusDays(1).toString(), true, false);
+        assertFalse(sdarOpen(send("/ota/v1/BKG/OTA_VehAvailRate", availAt(from, to))), "overdue car is not sold again");
+        stateBooking("late-1", now.minusDays(7).toString(), now.minusDays(1).toString(), true, true);
+        assertTrue(sdarOpen(send("/ota/v1/BKG/OTA_VehAvailRate", availAt(from, to))), "free once checked in");
+    }
+
+    @Test
+    void timeRulesUseTheBranchTimeZone() throws Exception {
+        java.time.LocalDateTime amman = java.time.LocalDateTime.now(java.time.ZoneId.of("Asia/Amman")).withSecond(0).withNano(0);
+        rules((agg, r) -> {
+            r.put("minLeadHours", 2);
+            for (JsonNode l : r.path("locations")) ((ObjectNode) l).remove("openingHours");
+        });
+        String from = amman.plusHours(3).toString() + ":00", to = amman.plusDays(2).toString() + ":00";
+        assertFalse(send("/ota/v1/BKG/OTA_VehAvailRate", availAt(from, to)).contains("INVALID_DATE"), "3 h ahead in Amman is accepted");
+        // The same clock time is already past where the branches are 11 hours ahead of Amman.
+        rules((agg, r) -> r.put("timeZone", "Etc/GMT-14"));
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", availAt(from, to)).contains("INVALID_DATE"));
+    }
+
+    @Test
+    void staffCannotDeleteABrokerBookingItIsCancelledInstead() throws Exception {
+        String r = send("/ota/v1/BKG/OTA_VehRes", direct(Y + "-05-01T10:00:00", Y + "-05-04T10:00:00", "DEL-1", "Roe"));
+        assertTrue(r.contains("<Success/>"), r);
+        String id = reservations().path(Y).path("May").get(0).path("id").asText();
+        stateService.applyPatch(M.writeValueAsString(M.createObjectNode().set("ops", M.createArrayNode().add(
+            M.createObjectNode().put("op", "deleteReservation").put("id", id)))));
+        JsonNode kept = reservations().path(Y).path("May");
+        assertEquals(1, kept.size(), "the booking stays on record");
+        assertEquals("CANCELLED", kept.get(0).path("status").asText());
+        assertTrue(webhooks.findAll().stream().anyMatch(d -> "reservation.cancelled".equals(d.getEventType())), "the broker is told");
+        // An ordinary walk-in booking is still deleted normally.
+        stateBooking("walk-del", Y + "-06-01T10:00", Y + "-06-03T10:00", false, false);
+        stateService.applyPatch(M.writeValueAsString(M.createObjectNode().set("ops", M.createArrayNode().add(
+            M.createObjectNode().put("op", "deleteReservation").put("id", "walk-del")))));
+        assertEquals(0, reservations().path(Y).path("June").size());
+    }
 }

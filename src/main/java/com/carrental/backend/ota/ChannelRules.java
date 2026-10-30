@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.DayOfWeek;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.*;
@@ -40,8 +42,20 @@ public record ChannelRules(
     BigDecimal noShowFeePercent,
     int inventoryPushDays,        // days ahead sent in inventory.updated
     List<CancelTier> cancellationTiers,  // sorted by hoursBefore, largest first
-    Map<String, BigDecimal> currencies   // sell currency -> units per 1 channel currency
+    Map<String, BigDecimal> currencies,  // sell currency -> units per 1 channel currency
+    ZoneId zone,                  // the branches' local time: lead time, deadlines and no-shows are counted in it
+    int turnaroundMinutes,        // cleaning / preparation time kept free before and after every rental
+    int overdueHoldHours,         // a car not back by its return time is treated as returning this many hours from now
+    boolean allowRetrieve,        // operations agreed with this broker (search and book are always on while bookings are enabled)
+    boolean allowModify,
+    boolean allowCancel
 ) {
+    /** Default time zone of the branches when none is set on the channel. */
+    public static final ZoneId DEFAULT_ZONE = ZoneId.of("Asia/Amman");
+
+    /** The current local time at the branches (the server itself runs in UTC). */
+    public LocalDateTime now() { return LocalDateTime.now(zone); }
+
     /** Cancelling less than hoursBefore hours before pick-up costs feePercent of the booking. */
     public record CancelTier(int hoursBefore, BigDecimal feePercent) {}
 
@@ -178,7 +192,16 @@ public record ChannelRules(
             clamp(r.path("noShowAfterHours").asInt(0), 0, 24 * 7),
             money(r.path("noShowFeePercent"), BigDecimal.valueOf(100)).min(BigDecimal.valueOf(100)),
             clamp(r.path("inventoryPushDays").asInt(60), 7, 365),
-            tiers(r), currencies(r, ch.currency()));
+            tiers(r), currencies(r, ch.currency()), zone(r.path("timeZone").asText("")),
+            clamp(r.path("turnaroundMinutes").asInt(0), 0, 24 * 60),
+            clamp(r.path("overdueHoldHours").asInt(24), 1, 24 * 14),
+            r.path("operations").path("retrieve").asBoolean(true),
+            r.path("operations").path("modify").asBoolean(true),
+            r.path("operations").path("cancel").asBoolean(true));
+    }
+
+    private static ZoneId zone(String id) {
+        try { return id.isBlank() ? DEFAULT_ZONE : ZoneId.of(id.trim()); } catch (Exception e) { return DEFAULT_ZONE; }
     }
 
     /**
@@ -285,7 +308,8 @@ public record ChannelRules(
     public ChannelRules forCertification(int buffer) {
         return new ChannelRules(true, paymentModel, freeCancellationHours, lateCancellationFeePercent, modificationFee, minLeadHours, maxRentalDays,
             maxHorizonDays, minDriverAge, maxDriverAge, offerValidityMinutes, holdMinutes, buffer, oneWayFee, allowedGroups, locations, "",
-            webhookEvents, pricing, groupDetails, allotments, 0, noShowFeePercent, inventoryPushDays, cancellationTiers, currencies);
+            webhookEvents, pricing, groupDetails, allotments, 0, noShowFeePercent, inventoryPushDays, cancellationTiers, currencies,
+            zone, turnaroundMinutes, overdueHoldHours, true, true, true);
     }
 
     private static String addressOf(JsonNode rentalLocations, String name, String fallback) {

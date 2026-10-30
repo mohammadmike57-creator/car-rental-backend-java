@@ -39,6 +39,13 @@ public class ChannelBookingService {
         public String code() { return channel.urlCode().toUpperCase(Locale.ROOT); }
     }
 
+    /**
+     * The context with the reservations as they are now. Every check that ends in a write runs on it,
+     * inside the booking lock, so a booking confirmed a moment earlier by another broker (or by staff)
+     * is always counted: two requests can never both take the last car.
+     */
+    private Ctx latest(Ctx c) { return new Ctx(c.channel(), c.rules(), readState(), c.sandbox()); }
+
     static final ObjectMapper JSON = new ObjectMapper().registerModule(new JavaTimeModule())
         .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     private static final DateTimeFormatter LOCAL_MIN = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm");
@@ -126,6 +133,7 @@ public class ChannelBookingService {
     public Offer quote(Ctx c, String offerId) {
         bookingLock.lock();
         try {
+            c = latest(c);
             ChannelOffer stored = offerFor(c, offerId);
             Search s = searchOf(stored);
             Offer fresh = single(c, s, stored.getSippCode(), stored.getId(), null);
@@ -206,6 +214,7 @@ public class ChannelBookingService {
 
         bookingLock.lock();
         try {
+            c = latest(c);
             Optional<ChannelBooking> same = bookings.findByChannelIdAndIdempotencyKey(c.channel().id(), key);
             if (same.isPresent()) {
                 if (!same.get().getRequestHash().equals(hash)) {
@@ -258,6 +267,7 @@ public class ChannelBookingService {
             b.setCustomerName(req.customer().fullName());
             b.setPromoCode(fresh.promoCode());
             b.setStatus("PENDING");
+            b.setVersion(1);
             b.setSandbox(c.sandbox());
             b.setCreatedAt(Instant.now());
             b = bookings.save(b);
@@ -288,14 +298,22 @@ public class ChannelBookingService {
         }
     }
 
+    /** A broker's retrieve request: only when retrieving is part of the channel's agreement. */
+    public Reservation retrieve(Ctx c, String reference) {
+        if (!c.rules().allowRetrieve()) throw ChannelError.PERMISSION_DENIED.ex("Retrieving bookings is not part of this channel's agreement");
+        return get(c, reference);
+    }
+
     public Reservation get(Ctx c, String reference) {
         ChannelBooking b = find(c, reference);
         return view(c, b, load(c, b));
     }
 
     public Reservation modify(Ctx c, ModifyRequest req) {
+        if (!c.rules().allowModify()) throw ChannelError.MODIFICATION_NOT_ALLOWED.ex("Modifications are not part of this channel's agreement: cancel and book again");
         bookingLock.lock();
         try {
+            c = latest(c);
             ChannelBooking b = find(c, req.reservation());
             ObjectNode res = load(c, b);
             String status = externalStatus(res);
@@ -339,6 +357,7 @@ public class ChannelBookingService {
             b.setTotal(fresh.totalAmount());
             b.setCustomerName(customer.fullName());
             b.setPromoCode(fresh.promoCode());
+            b.nextVersion();
             b.setUpdatedAt(Instant.now());
             bookings.save(b);
             Reservation view = view(c, b, updated);
@@ -352,6 +371,7 @@ public class ChannelBookingService {
     }
 
     public Reservation cancel(Ctx c, String reference, String reason) {
+        if (!c.rules().allowCancel()) throw ChannelError.CANCELLATION_NOT_ALLOWED.ex("Cancellations are not part of this channel's agreement: contact the supplier");
         bookingLock.lock();
         try {
             ChannelBooking b = find(c, reference);
@@ -362,10 +382,10 @@ public class ChannelBookingService {
                 throw ChannelError.CANCELLATION_NOT_ALLOWED.ex("Reservation " + b.getReservationNumber() + " is " + status);
             }
             BigDecimal total = b.getTotal() == null ? BigDecimal.ZERO : b.getTotal();
-            long hoursBefore = Duration.between(LocalDateTime.now(), b.getPickupAt()).toHours();
+            long hoursBefore = Duration.between(c.rules().now(), b.getPickupAt()).toHours();
             // The schedule agreed when the booking was made applies, even if the channel's rules changed since.
             List<Penalty> agreed = readPenalties(res.path("channelPrice").get("penalties"));
-            BigDecimal pct = agreed != null ? percentAt(agreed, LocalDateTime.now()) : c.rules().cancellationPercent(hoursBefore);
+            BigDecimal pct = agreed != null ? percentAt(agreed, c.rules().now()) : c.rules().cancellationPercent(hoursBefore);
             BigDecimal fee = total.multiply(pct).divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
             BigDecimal refund = c.rules().prepaid() ? total.subtract(fee).max(BigDecimal.ZERO) : BigDecimal.ZERO;
             res.put("status", "CANCELLED");
@@ -379,6 +399,7 @@ public class ChannelBookingService {
             store(c, b, res);
             b.setStatus("CANCELLED");
             b.setFeeAmount(fee);
+            b.nextVersion();
             b.setUpdatedAt(Instant.now());
             bookings.save(b);
             Reservation view = view(c, b, res);
@@ -400,7 +421,7 @@ public class ChannelBookingService {
         if (hours <= 0 || c.sandbox()) return 0;
         int marked = 0;
         for (ChannelBooking b : bookings.findByChannelIdAndSandboxFalseAndStatusInAndPickupAtBefore(c.channel().id(),
-                List.of("CONFIRMED", "PENDING"), LocalDateTime.now().minusHours(hours))) {
+                List.of("CONFIRMED", "PENDING"), c.rules().now().minusHours(hours))) {
             bookingLock.lock();
             try {
                 ObjectNode res = load(c, b);
@@ -423,6 +444,7 @@ public class ChannelBookingService {
                 store(c, b, res);
                 b.setStatus("NO_SHOW");
                 b.setFeeAmount(fee);
+                b.nextVersion();
                 b.setUpdatedAt(Instant.now());
                 bookings.save(b);
                 audit(c, "CHANNEL_BOOKING_NO_SHOW", "Booking " + b.getReservationNumber() + " marked no-show " + hours
@@ -442,7 +464,7 @@ public class ChannelBookingService {
     public ObjectNode inventory(Ctx c, int days) {
         ObjectNode out = JSON.createObjectNode();
         out.put("channel_code", c.code()).put("currency", c.channel().currency());
-        LocalDate start = LocalDate.now();
+        LocalDate start = c.rules().now().toLocalDate();
         out.put("from", start.toString()).put("to", start.plusDays(days - 1).toString());
         ArrayNode groups = out.putArray("groups");
         for (VehicleGroup g : vehicleGroups(c)) {
@@ -759,18 +781,27 @@ public class ChannelBookingService {
         }
         if (usable == 0) return new Avail(0, null);
         int busy = 0;
+        LocalDateTime now = c.rules().now();
+        int turn = c.rules().turnaroundMinutes();
         for (JsonNode r : allReservations(c.state())) {
             if (excludeReservation != null && excludeReservation.equals(r.path("id").asText())) continue;
             String st = r.path("status").asText("");
             if ("CANCELLED".equals(st) || "NO_SHOW".equals(st) || r.path("dropOffCompleted").asBoolean(false)) continue;
             LocalDateTime s = parseLocal(r.path("startDate").asText(r.path("pickupDate").asText("")));
             LocalDateTime e = parseLocal(r.path("endDate").asText(r.path("dropoffDate").asText("")));
-            if (s == null || e == null || !s.isBefore(to) || !e.isAfter(from)) continue;
+            if (s == null || e == null) continue;
+            // A car that went out and is not back by its return time stays busy: until it is checked in,
+            // it is treated as returning overdueHoldHours from now.
+            if (r.path("voucherSubmitted").asBoolean(false) && e.isBefore(now)) e = now.plusHours(c.rules().overdueHoldHours());
+            // Cleaning / preparation time is kept free before and after every rental.
+            s = s.minusMinutes(turn);
+            e = e.plusMinutes(turn);
+            if (!s.isBefore(to) || !e.isAfter(from)) continue;
             if (inGroup(r, sipp, plates, models)) busy++;
         }
         long holds = offers.countHolds(sipp, from, to, Instant.now(), excludeOffer == null ? "" : excludeOffer);
         int free = (int) Math.max(0, usable - busy - holds - c.rules().operationalBuffer());
-        long daysAhead = ChronoUnit.DAYS.between(LocalDate.now(), pickupDay);
+        long daysAhead = ChronoUnit.DAYS.between(c.rules().now().toLocalDate(), pickupDay);
         for (ChannelRules.Allotment a : allots) {
             if (daysAhead <= a.releaseDays()) continue;     // released: free sale
             long used = bookings.countOverlapping(c.channel().id(), c.sandbox(), sipp.toUpperCase(Locale.ROOT), from, to,
@@ -809,7 +840,7 @@ public class ChannelBookingService {
     void validate(Ctx c, Search s) {
         if (s.pickupAt() == null || s.returnAt() == null) throw ChannelError.INVALID_DATE.ex("Pick-up and return date and time are required");
         if (!s.returnAt().isAfter(s.pickupAt())) throw ChannelError.INVALID_DATE.ex("Return must be after pick-up");
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = c.rules().now();
         if (s.pickupAt().isBefore(now.plusHours(c.rules().minLeadHours()))) {
             throw ChannelError.INVALID_DATE.ex("Pick-up must be at least " + c.rules().minLeadHours() + " hours from now");
         }
@@ -895,7 +926,7 @@ public class ChannelBookingService {
         if (!trim(cu.email()).isEmpty()) r.put("customerEmail", cu.email().trim()); else r.remove("customerEmail");
         r.put("startDate", start).put("pickupDate", start).put("endDate", end).put("dropoffDate", end);
         r.put("storageYear", s.pickupAt().getYear()).put("storageMonth", MONTHS[s.pickupAt().getMonthValue() - 1]);
-        r.put("bookingDate", existing != null ? existing.path("bookingDate").asText(LocalDate.now().toString()) : LocalDate.now().toString());
+        r.put("bookingDate", existing != null ? existing.path("bookingDate").asText(c.rules().now().toLocalDate().toString()) : c.rules().now().toLocalDate().toString());
         r.put("source", sourceName(c));
         r.put("paymentType", c.rules().prepaid() ? "Prepaid" : "Pay on Arrival");
         r.put("sippCode", o.vehicleGroup());
@@ -1102,7 +1133,7 @@ public class ChannelBookingService {
             cancelled ? res.path("refundStatus").asText(null) : null, b.isSandbox(),
             p.has("tax") ? p.path("tax").decimalValue() : BigDecimal.ZERO.setScale(2), p.path("taxIncluded").asBoolean(true),
             read(p.get("mileage"), Mileage.class), readList(p.get("coverages")), read(p.get("vehicle"), VehicleInfo.class),
-            p.path("promoCode").asText(null), readPenalties(p.get("penalties")));
+            p.path("promoCode").asText(null), readPenalties(p.get("penalties")), b.currentVersion());
     }
 
     private static <T> T read(JsonNode n, Class<T> type) {

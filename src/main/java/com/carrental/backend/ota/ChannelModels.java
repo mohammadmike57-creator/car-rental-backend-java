@@ -80,7 +80,7 @@ public final class ChannelModels {
                               Customer customer, Driver driver, String assignedVehicle, Instant createdAt,
                               BigDecimal cancellationFee, BigDecimal refundAmount, String refundStatus, boolean sandbox,
                               BigDecimal taxAmount, boolean taxIncluded, Mileage mileage, List<CoverageOffer> coverages,
-                              VehicleInfo vehicle, String promoCode, List<Penalty> penalties) {}
+                              VehicleInfo vehicle, String promoCode, List<Penalty> penalties, int version) {}
 
     public record OpeningHours(String day, String open, String close) {}
 

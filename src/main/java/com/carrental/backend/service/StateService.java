@@ -61,25 +61,12 @@ public class StateService {
     // so concurrent saves are applied one after another on the latest data. (No @Transactional here:
     // it would commit after the lock is released and let a parallel save read stale data.)
     public synchronized String getFullState() {
-        AppData appData = appDataRepository.findMain()
-                .orElseGet(() -> {
-                    AppData newData = new AppData();
-                    newData.setId("main");
-                    newData.setData(INITIAL_STATE);
-                    return appDataRepository.save(newData);
-                });
-        return appData.getData();
+        return loadMain().getData();
     }
 
     public synchronized void mergeState(String updatesJson) {
         // Ensure the document exists before merging
-        AppData appData = appDataRepository.findMain()
-                .orElseGet(() -> {
-                    AppData newData = new AppData();
-                    newData.setId("main");
-                    newData.setData(INITIAL_STATE);
-                    return appDataRepository.save(newData);
-                });
+        AppData appData = loadMain();
         autoBackup(appData);
 
         try {
@@ -117,13 +104,16 @@ public class StateService {
         }
     }
 
+    /** The main row with the data as saved now (never a copy cached earlier in the same request). */
     private AppData loadMain() {
-        return appDataRepository.findMain().orElseGet(() -> {
+        AppData main = appDataRepository.findMain().orElseGet(() -> {
             AppData newData = new AppData();
             newData.setId("main");
             newData.setData(INITIAL_STATE);
             return appDataRepository.save(newData);
         });
+        appDataRepository.currentMainData().ifPresent(main::setData);
+        return main;
     }
 
     /**
@@ -154,7 +144,21 @@ public class StateService {
                         upsertReservation(root, op.path("year").asText(), op.path("month").asText(), op.path("reservation"));
                         changed.add(new ReservationChangedEvent(before == null ? null : before.deepCopy(), op.path("reservation")));
                     }
-                    case "deleteReservation" -> { if (!refuseDeletes) removeReservation(root, op.path("id").asText(), null); }
+                    case "deleteReservation" -> {
+                        if (refuseDeletes) break;
+                        JsonNode existing = findReservation(root, op.path("id").asText(""));
+                        if (existing instanceof ObjectNode res && !res.path("channelReservationNumber").asText("").isBlank()) {
+                            // A broker booking is never removed: it is cancelled, so the broker is told and the record stays.
+                            if (!"CANCELLED".equals(res.path("status").asText())) {
+                                JsonNode before = res.deepCopy();
+                                res.put("status", "CANCELLED").put("cancelledAt", Instant.now().toString())
+                                    .put("cancellationReason", "Cancelled by the supplier").put("lastEditedBy", "Staff (delete)");
+                                changed.add(new ReservationChangedEvent(before, res.deepCopy()));
+                            }
+                        } else {
+                            removeReservation(root, op.path("id").asText(), null);
+                        }
+                    }
                     case "set" -> {
                         String key = op.path("key").asText();
                         JsonNode value = op.path("value");

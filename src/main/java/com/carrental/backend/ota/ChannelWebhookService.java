@@ -98,6 +98,7 @@ public class ChannelWebhookService {
         body.put("reservation_id", r.reservationId());
         body.put("broker_reference", r.brokerReference());
         body.put("status", r.status());
+        body.put("reservation_version", r.version());
         body.put("occurred_at", Instant.now().toString());
         body.put("sandbox", c.sandbox());
         body.set("data", ChannelBookingService.JSON.valueToTree(r));
@@ -166,6 +167,7 @@ public class ChannelWebhookService {
             if (events.isEmpty()) return;
             ChannelBooking booking = b.get();
             booking.setStatus(ChannelBookingService.externalStatus(after));
+            booking.nextVersion();
             booking.setUpdatedAt(Instant.now());
             bookings.save(booking);
             Reservation view = core.view(c, booking, after);

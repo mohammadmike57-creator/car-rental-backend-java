@@ -127,7 +127,7 @@ public class OtaBookingController {
             };
             case "OTA_VehRetResRQ" -> c -> {
                 OtaBookingXml.Parsed p = OtaBookingXml.parse(body, rq);
-                Reservation r = core.get(c.ctx(), OtaBookingXml.uniqueId(p.root()));
+                Reservation r = core.retrieve(c.ctx(), OtaBookingXml.uniqueId(p.root()));
                 checkSurname(p, r);
                 return OtaBookingXml.reservation("OTA_VehRetResRS", p.echoToken(), prod(c), r, c.ctx().channel().vendorCode());
             };

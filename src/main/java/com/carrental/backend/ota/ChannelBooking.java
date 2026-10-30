@@ -45,4 +45,12 @@ public class ChannelBooking {
     private boolean sandbox;
     @Column(nullable = false) private Instant createdAt;
     private Instant updatedAt;
+    /** Goes up by one on every change told to the broker, so it can ignore an update older than the one it has. */
+    private Integer version;
+
+    /** The current version (bookings made before versions existed count as version 1). */
+    public int currentVersion() { return version == null ? 1 : version; }
+
+    /** A new version for a change; returns it. */
+    public int nextVersion() { version = currentVersion() + 1; return version; }
 }

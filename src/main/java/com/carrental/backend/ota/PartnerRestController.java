@@ -143,7 +143,7 @@ public class PartnerRestController {
 
     @GetMapping("/reservations/{id}")
     public ResponseEntity<String> get(@PathVariable String channel, @PathVariable String id, HttpServletRequest http) {
-        return run(channel, null, http, "REST retrieve", c -> envelope(c, "reservation", core.get(c.ctx(), id)));
+        return run(channel, null, http, "REST retrieve", c -> envelope(c, "reservation", core.retrieve(c.ctx(), id)));
     }
 
     @PatchMapping(value = "/reservations/{id}", consumes = MediaType.ALL_VALUE)

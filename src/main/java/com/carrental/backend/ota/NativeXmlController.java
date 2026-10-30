@@ -191,7 +191,7 @@ public class NativeXmlController {
                 return ok(responseRoot, c, x -> reservation(x, res));
             };
             case "ReservationStatus" -> c -> {
-                Reservation res = core.get(c.ctx(), reference(r));
+                Reservation res = core.retrieve(c.ctx(), reference(r));
                 return ok(responseRoot, c, x -> reservation(x, res));
             };
             case "ReservationModify" -> c -> {
