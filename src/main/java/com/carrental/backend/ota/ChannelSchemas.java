@@ -393,6 +393,21 @@ final class ChannelSchemas {
                   <xs:attribute name="Fee" type="Money"/>
                 </xs:complexType>
               </xs:element>
+              <xs:element name="SpecialDays" minOccurs="0">
+                <xs:annotation><xs:documentation>Holidays and special hours for the next year. Closed="true": no pick-ups or returns that day.
+                  Otherwise Open/Close replace the usual hours for that date.</xs:documentation></xs:annotation>
+                <xs:complexType><xs:sequence>
+                  <xs:element name="SpecialDay" maxOccurs="unbounded">
+                    <xs:complexType>
+                      <xs:attribute name="Date" type="xs:date" use="required"/>
+                      <xs:attribute name="Closed" type="xs:boolean" use="required"/>
+                      <xs:attribute name="Open" type="xs:string"/>
+                      <xs:attribute name="Close" type="xs:string"/>
+                      <xs:attribute name="Note" type="xs:string"/>
+                    </xs:complexType>
+                  </xs:element>
+                </xs:sequence></xs:complexType>
+              </xs:element>
             </xs:sequence>
           </xs:complexType>
           <xs:complexType name="Penalties">

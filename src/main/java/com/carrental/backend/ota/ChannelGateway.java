@@ -76,7 +76,8 @@ public class ChannelGateway {
             ch = found.get();
             if ("paused".equalsIgnoreCase(ch.status())) throw ChannelError.PERMISSION_DENIED.ex("Distribution to this channel is paused");
             if (!ipAllowed(ch, remote)) throw ChannelError.PERMISSION_DENIED.ex("Requests from " + remote + " are not allowed for this channel");
-            boolean sandboxHeader = console || "sandbox".equalsIgnoreCase(http.getHeader("X-Environment"));
+            boolean testKey = !consoleOk && PartnerKeyVerifier.kind(ch, key) == PartnerKeyVerifier.KeyKind.TEST;
+            boolean sandboxHeader = console || testKey || "sandbox".equalsIgnoreCase(http.getHeader("X-Environment"));
             ChannelBookingService.Ctx ctx = core.context(ch, sandboxHeader);
             sandbox = ctx.sandbox();
             Rendered ok = action.apply(new Call(ctx, rid));

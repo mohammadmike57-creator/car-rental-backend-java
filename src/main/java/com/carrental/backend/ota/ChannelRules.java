@@ -62,8 +62,15 @@ public record ChannelRules(
     /** A station: code the broker uses, our branch, contact, position, hours and after-hours rules. */
     public record Location(String code, String name, String address, boolean pickup, boolean dropOff,
                            String type, String phone, Double latitude, Double longitude,
-                           Map<DayOfWeek, Hours> hours, boolean afterHoursPickup, boolean afterHoursReturn, BigDecimal afterHoursFee) {
+                           Map<DayOfWeek, Hours> hours, boolean afterHoursPickup, boolean afterHoursReturn, BigDecimal afterHoursFee,
+                           Map<LocalDate, SpecialDay> specialDays) {
         public boolean openAt(java.time.LocalDateTime t) {
+            SpecialDay sd = specialDays.get(t.toLocalDate());
+            if (sd != null) {
+                if (sd.closed()) return false;
+                LocalTime at = t.toLocalTime();
+                return !at.isBefore(sd.open()) && !at.isAfter(sd.close());
+            }
             if (hours.isEmpty()) return true;              // no hours set: always open
             Hours h = hours.get(t.getDayOfWeek());
             if (h == null) return false;
@@ -72,6 +79,8 @@ public record ChannelRules(
         }
     }
     public record Hours(LocalTime open, LocalTime close) {}
+    /** A public holiday or special day: closed, or open at other hours than usual. */
+    public record SpecialDay(LocalDate date, boolean closed, LocalTime open, LocalTime close, String note) {}
 
     /** Tax, mileage, insurance covers, promotions and driver-age fees. */
     public record Pricing(BigDecimal taxPercent, boolean taxIncluded, String taxName,
@@ -250,6 +259,14 @@ public record ChannelRules(
             LocalTime open = time(day.path("open")), close = time(day.path("close"));
             if (open != null && close != null) hours.put(d, new Hours(open, close));
         }
+        Map<LocalDate, SpecialDay> special = new java.util.TreeMap<>();
+        for (JsonNode d : l.path("specialDays")) {
+            LocalDate date;
+            try { date = LocalDate.parse(d.path("date").asText("")); } catch (Exception e) { continue; }
+            LocalTime open = time(d.path("open")), close = time(d.path("close"));
+            boolean closed = d.path("closed").asBoolean(false) || open == null || close == null;
+            special.put(date, new SpecialDay(date, closed, open, close, d.path("note").asText("").trim()));
+        }
         // If some days are set and others are not, the missing ones are closed; if none are set, always open.
         Double lat = l.path("latitude").isNumber() ? l.path("latitude").asDouble() : null;
         Double lng = l.path("longitude").isNumber() ? l.path("longitude").asDouble() : null;
@@ -257,7 +274,7 @@ public record ChannelRules(
         if (!LOCATION_TYPES.contains(type)) type = "CITY";
         return new Location(code, name, address, l.path("pickup").asBoolean(true), l.path("dropOff").asBoolean(true), type,
             l.path("phone").asText("").trim(), lat, lng, hours, l.path("afterHoursPickup").asBoolean(false), l.path("afterHoursReturn").asBoolean(false),
-            money(l.path("afterHoursFee"), BigDecimal.ZERO));
+            money(l.path("afterHoursFee"), BigDecimal.ZERO), special);
     }
 
     public Location location(String code) {

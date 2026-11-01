@@ -82,8 +82,20 @@ public class ChannelBookingService {
             List<OpeningHours> hours = new ArrayList<>();
             l.hours().forEach((d, h) -> hours.add(new OpeningHours(d.name().substring(0, 3), h.open().toString(), h.close().toString())));
             return new Location(l.code(), l.name(), l.address(), l.pickup(), l.dropOff(), l.type(), l.phone(), l.latitude(), l.longitude(),
-                hours, l.afterHoursPickup(), l.afterHoursReturn(), l.afterHoursFee());
+                hours, l.afterHoursPickup(), l.afterHoursReturn(), l.afterHoursFee(), specialDays(c, l));
         }).toList();
+    }
+
+    /** Holidays and special hours from today up to a year ahead. */
+    private static List<SpecialDay> specialDays(Ctx c, ChannelRules.Location l) {
+        LocalDate today = c.rules().now().toLocalDate();
+        List<SpecialDay> out = new ArrayList<>();
+        l.specialDays().forEach((d, sd) -> {
+            if (d.isBefore(today) || d.isAfter(today.plusDays(366))) return;
+            out.add(new SpecialDay(d.toString(), sd.closed(), sd.closed() ? null : sd.open().toString(), sd.closed() ? null : sd.close().toString(),
+                sd.note().isEmpty() ? null : sd.note()));
+        });
+        return out;
     }
 
     public List<Coverage> coverages(Ctx c) {
@@ -855,6 +867,8 @@ public class ChannelBookingService {
         if (r == null) throw ChannelError.INVALID_LOCATION.ex("Unknown return location " + s.returnLocation());
         if (!p.pickup()) throw ChannelError.INVALID_LOCATION.ex(p.code() + " does not allow pick-ups");
         if (!r.dropOff()) throw ChannelError.INVALID_LOCATION.ex(r.code() + " does not allow returns");
+        closedDay(p, s.pickupAt(), "pick-up");
+        closedDay(r, s.returnAt(), "return");
         if (!p.openAt(s.pickupAt()) && !p.afterHoursPickup()) {
             throw ChannelError.INVALID_DATE.ex(p.code() + " is closed at " + s.pickupAt().toLocalTime() + " on " + s.pickupAt().getDayOfWeek() + hoursText(p, s.pickupAt()));
         }
@@ -864,7 +878,17 @@ public class ChannelBookingService {
         if (s.driverAge() != null) checkAge(c, s.driverAge());
     }
 
+    /** A branch closed for a holiday takes no pick-ups or returns that day, not even after hours. */
+    private static void closedDay(ChannelRules.Location l, LocalDateTime t, String what) {
+        ChannelRules.SpecialDay sd = l.specialDays().get(t.toLocalDate());
+        if (sd != null && sd.closed()) {
+            throw ChannelError.INVALID_DATE.ex(l.code() + " is closed on " + t.toLocalDate() + (sd.note().isEmpty() ? "" : " (" + sd.note() + ")") + ": no " + what + " that day");
+        }
+    }
+
     private static String hoursText(ChannelRules.Location l, LocalDateTime t) {
+        ChannelRules.SpecialDay sd = l.specialDays().get(t.toLocalDate());
+        if (sd != null) return " (" + (sd.note().isEmpty() ? "special hours" : sd.note()) + ": open " + sd.open() + "-" + sd.close() + ")";
         ChannelRules.Hours h = l.hours().get(t.getDayOfWeek());
         return h == null ? " (closed all day)" : " (open " + h.open() + "-" + h.close() + ")";
     }

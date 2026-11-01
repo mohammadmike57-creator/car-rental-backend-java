@@ -246,8 +246,13 @@ public final class OtaBookingXml {
             x.close();
             x.open("TPA_Extensions").el("PickUp", String.valueOf(l.pickup())).el("Return", String.valueOf(l.dropOff()))
              .el("LocationType", l.type()).el("AfterHours", null, "PickUp", l.afterHoursPickup(), "Return", l.afterHoursReturn(),
-                 "Fee", l.afterHoursFee().signum() > 0 ? l.afterHoursFee() : null)
-             .el("Vendor", null, "Code", vendor).close();
+                 "Fee", l.afterHoursFee().signum() > 0 ? l.afterHoursFee() : null);
+            if (l.specialDays() != null && !l.specialDays().isEmpty()) {
+                x.open("SpecialDays");
+                for (SpecialDay d : l.specialDays()) x.el("SpecialDay", null, "Date", d.date(), "Closed", d.closed(), "Open", d.open(), "Close", d.close(), "Note", d.note());
+                x.close();
+            }
+            x.el("Vendor", null, "Code", vendor).close();
             x.close();
         }
     }

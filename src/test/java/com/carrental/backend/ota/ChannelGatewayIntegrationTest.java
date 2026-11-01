@@ -899,4 +899,39 @@ class ChannelGatewayIntegrationTest {
             M.createObjectNode().put("op", "deleteReservation").put("id", "walk-del")))));
         assertEquals(0, reservations().path(Y).path("June").size());
     }
+
+    @Test
+    void holidaysCloseTheBranchAndSpecialHoursReplaceTheUsualOnes() throws Exception {
+        rules((agg, r) -> {
+            ArrayNode sd = ((ObjectNode) r.path("locations").get(0)).putArray("specialDays");
+            sd.addObject().put("date", Y + "-05-01").put("closed", true).put("note", "Labour Day");
+            sd.addObject().put("date", Y + "-05-02").put("open", "10:00").put("close", "14:00").put("note", "Short day");
+        });
+        String closed = send("/ota/v1/BKG/OTA_VehAvailRate", availAt(Y + "-05-01T10:00:00", Y + "-05-04T10:00:00"));
+        assertTrue(closed.contains("INVALID_DATE") && closed.contains("Labour Day"), closed);
+        // Returning on the holiday is refused too
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", availAt(Y + "-04-28T10:00:00", Y + "-05-01T10:00:00")).contains("INVALID_DATE"));
+        String early = send("/ota/v1/BKG/OTA_VehAvailRate", availAt(Y + "-05-02T09:00:00", Y + "-05-04T10:00:00"));
+        assertTrue(early.contains("INVALID_DATE") && early.contains("open 10:00-14:00"), early);
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", availAt(Y + "-05-02T11:00:00", Y + "-05-04T10:00:00")).contains("<Success/>"));
+        // The broker sees the days in the station list
+        String locs = send("/ota/v1/BKG/OTA_VehLocSearch", "<OTA_VehLocSearchRQ/>");
+        assertTrue(locs.contains("<SpecialDay Date=\"" + Y + "-05-01\" Closed=\"true\" Note=\"Labour Day\"/>"), locs);
+    }
+
+    @Test
+    void theTestKeyOnlyEverReachesTheSandbox() throws Exception {
+        rules((agg, r) -> agg.put("testKeyHash", PartnerKeyVerifier.sha256Hex("test-only-key")));
+        String rq = direct(Y + "-05-01T10:00:00", Y + "-05-04T10:00:00", "TK-1", "Roe");
+        String test = mvc.perform(post("/ota/v1/BKG/OTA_VehRes").header("X-Api-Key", "test-only-key").contentType(MediaType.APPLICATION_XML).content(rq))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertTrue(test.contains("Target=\"Test\""), test);
+        assertEquals(0, reservations().path(Y).path("May").size(), "a test-key booking is never a real reservation");
+        // The live key on the same live channel books for real
+        String live = send("/ota/v1/BKG/OTA_VehRes", rq.replace("TK-1", "LIVE-1"));
+        assertTrue(live.contains("Target=\"Production\""), live);
+        assertEquals(1, reservations().path(Y).path("May").size());
+        mvc.perform(post("/ota/v1/BKG/OTA_VehRes").header("X-Api-Key", "nope").contentType(MediaType.APPLICATION_XML).content(rq))
+            .andExpect(status().isUnauthorized());
+    }
 }

@@ -398,6 +398,11 @@ public class NativeXmlController {
         for (OpeningHours oh : l.openingHours()) x.el("Day", null, "Name", oh.day(), "Open", oh.open(), "Close", oh.close());
         x.close();
         x.el("AfterHours", null, "Pickup", l.afterHoursPickup(), "Return", l.afterHoursReturn(), "Fee", l.afterHoursFee().signum() > 0 ? l.afterHoursFee() : null);
+        if (l.specialDays() != null && !l.specialDays().isEmpty()) {
+            x.open("SpecialDays");
+            for (SpecialDay d : l.specialDays()) x.el("SpecialDay", null, "Date", d.date(), "Closed", d.closed(), "Open", d.open(), "Close", d.close(), "Note", d.note());
+            x.close();
+        }
     }
 
     private static java.time.LocalDate date(String v, String field) {

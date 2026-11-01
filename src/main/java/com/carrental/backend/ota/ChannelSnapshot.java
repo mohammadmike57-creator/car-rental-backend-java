@@ -50,6 +50,8 @@ public class ChannelSnapshot {
     public String status() { return text(channel, "status", "active"); }
     public String terms() { return text(channel, "termsAndConditions", ""); }
     public String feedKeyHash() { return text(channel, "feedKeyHash", ""); }
+    /** A second key that only ever works in the sandbox, for the broker's test system. */
+    public String testKeyHash() { return text(channel, "testKeyHash", ""); }
 
     public JsonNode connection() {
         JsonNode c = channel.get("connectionDetails");
