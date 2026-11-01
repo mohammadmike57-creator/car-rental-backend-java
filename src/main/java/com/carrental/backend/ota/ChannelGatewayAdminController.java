@@ -37,10 +37,12 @@ public class ChannelGatewayAdminController {
     private final ChannelBookingService core;
     private final ChannelJobs jobs;
     private final ChannelTrafficService traffic;
+    private final ChannelSecurityGuard guard;
 
     public ChannelGatewayAdminController(ChannelStateReader channels, ChannelBookingRepository bookings, ChannelWebhookService webhooks,
                                          ChannelWebhookRepository deliveries, ChannelCertificationService certification,
-                                         ChannelBookingService core, ChannelJobs jobs, ChannelTrafficService traffic) {
+                                         ChannelBookingService core, ChannelJobs jobs, ChannelTrafficService traffic, ChannelSecurityGuard guard) {
+        this.guard = guard;
         this.traffic = traffic;
         this.core = core;
         this.jobs = jobs;
@@ -182,6 +184,47 @@ public class ChannelGatewayAdminController {
             r.put("reservationNumber", m.getReservationNumber());
             return r;
         }).toList());
+    }
+
+    /** Who has been calling with this channel's code over the last week, failed sign-ins, and the addresses locked out now. */
+    @GetMapping("/security")
+    public ResponseEntity<?> security(@PathVariable String channelId, Authentication auth) {
+        if (!allowed(auth)) return forbidden();
+        java.time.Instant dayAgo = java.time.Instant.now().minus(java.time.Duration.ofHours(24));
+        Map<String, Map<String, Object>> byIp = new LinkedHashMap<>();
+        int failed24 = 0, failed7d = 0;
+        for (ChannelMessage m : traffic.search(channelId, 24 * 7, null, null, null, 5000)) {
+            boolean authFail = "AUTH_FAILED".equals(m.getErrorCode());
+            if (authFail) { failed7d++; if (m.getCreatedAt().isAfter(dayAgo)) failed24++; }
+            String ip = m.getRemoteIp() == null ? "unknown" : m.getRemoteIp();
+            if (ip.startsWith("console:")) continue;
+            Map<String, Object> e = byIp.computeIfAbsent(ip, k -> {
+                Map<String, Object> n = new LinkedHashMap<>();
+                n.put("ip", k); n.put("requests", 0); n.put("authFailures", 0); n.put("lastSeen", null);
+                return n;
+            });
+            e.put("requests", (int) e.get("requests") + 1);
+            if (authFail) e.put("authFailures", (int) e.get("authFailures") + 1);
+            if (e.get("lastSeen") == null || m.getCreatedAt().isAfter((java.time.Instant) e.get("lastSeen"))) e.put("lastSeen", m.getCreatedAt());
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("authFailures24h", failed24);
+        out.put("authFailures7d", failed7d);
+        out.put("addresses", byIp.values().stream()
+            .sorted((a, b) -> ((java.time.Instant) b.get("lastSeen")).compareTo((java.time.Instant) a.get("lastSeen"))).limit(50).toList());
+        out.put("locked", guard.locks());
+        out.put("signingSecretCreatedAt", webhooks.secretCreatedAt(channelId).map(Object::toString).orElse(null));
+        out.put("lockoutPolicy", Map.of("maxFailures", ChannelSecurityGuard.MAX_FAILURES, "windowMinutes", ChannelSecurityGuard.WINDOW_MINUTES,
+            "lockMinutes", ChannelSecurityGuard.LOCK_MINUTES));
+        return ResponseEntity.ok(out);
+    }
+
+    @PostMapping("/security/unlock")
+    public ResponseEntity<?> unlock(@PathVariable String channelId, @RequestBody Map<String, String> body, Authentication auth) {
+        if (!allowed(auth)) return forbidden();
+        String ip = body == null ? null : body.get("ip");
+        if (ip == null || ip.isBlank()) return ResponseEntity.badRequest().body(Map.of("error", "ip is required"));
+        return ResponseEntity.ok(Map.of("unlocked", guard.unlock(ip.trim())));
     }
 
     @GetMapping("/traffic/stats")

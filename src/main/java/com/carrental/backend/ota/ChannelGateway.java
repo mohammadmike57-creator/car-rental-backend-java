@@ -35,15 +35,24 @@ public class ChannelGateway {
     private final ChannelDeliveryService log2;
     private final ChannelBookingService core;
     private final ChannelTrafficService traffic;
+    private final ChannelSecurityGuard guard;
+    private final ChannelSecretRepository secrets;
     private final Map<String, long[]> windows = new ConcurrentHashMap<>();
+    /** Proxies in front of the server that append to X-Forwarded-For (the host's load balancer = 1). */
+    private static volatile int trustedProxyHops = 1;
     /** Request attribute the staff console sets (server side only) to call a channel without its key, always in sandbox. */
     static final String CONSOLE_ATTR = "nct.channel.console";
 
-    public ChannelGateway(ChannelStateReader channels, ChannelDeliveryService deliveries, ChannelBookingService core, ChannelTrafficService traffic) {
+    public ChannelGateway(ChannelStateReader channels, ChannelDeliveryService deliveries, ChannelBookingService core, ChannelTrafficService traffic,
+                          ChannelSecurityGuard guard, ChannelSecretRepository secrets,
+                          @org.springframework.beans.factory.annotation.Value("${channel.trusted-proxy-hops:1}") int hops) {
         this.channels = channels;
         this.log2 = deliveries;
         this.core = core;
         this.traffic = traffic;
+        this.guard = guard;
+        this.secrets = secrets;
+        trustedProxyHops = Math.max(0, Math.min(5, hops));
     }
 
     /**
@@ -69,11 +78,25 @@ public class ChannelGateway {
                 throw ChannelError.RATE_LIMIT_EXCEEDED.ex("Rate limit of " + rateLimit(ch) + " requests a minute exceeded; retry with back-off");
             }
             boolean consoleOk = console && found.isPresent() && found.get().id().equals(http.getAttribute(CONSOLE_ATTR));
+            java.time.Instant lock = consoleOk ? null : guard.lockedUntil(remote);
+            if (lock != null) {
+                ch = found.orElse(null);
+                throw ChannelError.AUTH_FAILED.ex("Too many failed attempts from " + remote + "; try again after " + lock.truncatedTo(java.time.temporal.ChronoUnit.SECONDS) + " (UTC)");
+            }
             if (found.isEmpty() || (!consoleOk && !PartnerKeyVerifier.matches(found.get(), key))) {
                 ch = found.orElse(null);
+                if (guard.failed(remote)) log.warn("Broker gateway: {} locked out after repeated failed authentication", remote);
                 throw ChannelError.AUTH_FAILED.ex("Invalid or missing feed key");
             }
             ch = found.get();
+            if (!consoleOk) {
+                guard.succeeded(remote);
+                if (ch.raw().path("bookingRules").path("requireSignature").asBoolean(false)) {
+                    String secret = secrets.findById(ch.id()).map(ChannelSecret::getWebhookSecret).orElse(null);
+                    guard.verifySignature(secret, http.getHeader("X-NCT-Timestamp"), http.getHeader("X-NCT-Signature"), body,
+                        System.currentTimeMillis() / 1000);
+                }
+            }
             if ("paused".equalsIgnoreCase(ch.status())) throw ChannelError.PERMISSION_DENIED.ex("Distribution to this channel is paused");
             if (!ipAllowed(ch, remote)) throw ChannelError.PERMISSION_DENIED.ex("Requests from " + remote + " are not allowed for this channel");
             boolean testKey = !consoleOk && PartnerKeyVerifier.kind(ch, key) == PartnerKeyVerifier.KeyKind.TEST;
@@ -128,12 +151,20 @@ public class ChannelGateway {
         return false;
     }
 
-    /** The partner's address: the first X-Forwarded-For entry behind the hosting proxy. */
+    /**
+     * The partner's address. Each proxy appends the address it received the request from, so the entry added by our own
+     * load balancer is trustworthy and anything to its left may have been written by the caller (and would let anyone pass
+     * an IP allow-list or dodge the lockout). We take the entry trustedProxyHops from the right.
+     */
     static String clientIp(HttpServletRequest http) {
         Object console = http.getAttribute(CONSOLE_ATTR + ".user");
         if (console != null) return "console:" + console;
         String fwd = http.getHeader("X-Forwarded-For");
-        if (fwd != null && !fwd.isBlank()) return fwd.split(",")[0].trim();
+        if (trustedProxyHops > 0 && fwd != null && !fwd.isBlank()) {
+            String[] parts = fwd.split(",");
+            String ip = parts[Math.max(0, parts.length - trustedProxyHops)].trim();
+            if (!ip.isEmpty()) return ip;
+        }
         return http.getRemoteAddr();
     }
 

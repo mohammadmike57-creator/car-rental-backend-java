@@ -52,6 +52,11 @@ public class ChannelSnapshot {
     public String feedKeyHash() { return text(channel, "feedKeyHash", ""); }
     /** A second key that only ever works in the sandbox, for the broker's test system. */
     public String testKeyHash() { return text(channel, "testKeyHash", ""); }
+    /** The key that was replaced, still accepted until previousKeyExpiresAt so the broker can switch without downtime. */
+    public String previousKeyHash() { return text(channel, "previousKeyHash", ""); }
+    public java.time.Instant previousKeyExpiresAt() {
+        try { return java.time.Instant.parse(text(channel, "previousKeyExpiresAt", "")); } catch (Exception e) { return null; }
+    }
 
     public JsonNode connection() {
         JsonNode c = channel.get("connectionDetails");

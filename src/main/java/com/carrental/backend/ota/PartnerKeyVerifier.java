@@ -40,6 +40,8 @@ public final class PartnerKeyVerifier {
         byte[] actual = sha256Hex(presentedKey).getBytes(StandardCharsets.US_ASCII);
         if (same(channel.feedKeyHash(), actual)) return KeyKind.LIVE;
         if (same(channel.testKeyHash(), actual)) return KeyKind.TEST;
+        java.time.Instant until = channel.previousKeyExpiresAt();
+        if (until != null && java.time.Instant.now().isBefore(until) && same(channel.previousKeyHash(), actual)) return KeyKind.LIVE;
         return KeyKind.NONE;
     }
 

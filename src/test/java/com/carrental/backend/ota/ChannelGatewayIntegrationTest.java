@@ -934,4 +934,80 @@ class ChannelGatewayIntegrationTest {
         mvc.perform(post("/ota/v1/BKG/OTA_VehRes").header("X-Api-Key", "nope").contentType(MediaType.APPLICATION_XML).content(rq))
             .andExpect(status().isUnauthorized());
     }
+
+    // ======================================================================= security
+
+    @Autowired ChannelSecurityGuard guard;
+    @Autowired ChannelWebhookService hooks;
+
+    org.springframework.test.web.servlet.ResultActions from(String ip, String key, String body) throws Exception {
+        return mvc.perform(post("/ota/v1/BKG/OTA_VehLocSearch").header("X-Forwarded-For", ip).header("X-Api-Key", key)
+            .contentType(MediaType.APPLICATION_XML).content(body));
+    }
+
+    @Test
+    void anAddressThatKeepsGuessingKeysIsLockedOut() throws Exception {
+        String ip = "198.51.100.66";
+        try {
+            for (int i = 0; i < ChannelSecurityGuard.MAX_FAILURES; i++) from(ip, "guess-" + i, "<OTA_VehLocSearchRQ/>").andExpect(status().isUnauthorized());
+            // Now even the right key is refused from that address…
+            from(ip, KEY, "<OTA_VehLocSearchRQ/>").andExpect(status().isUnauthorized())
+                .andExpect(content().string(containsString("Too many failed attempts")));
+            // …while the broker's own address is not affected
+            from("203.0.113.5", KEY, "<OTA_VehLocSearchRQ/>").andExpect(status().isOk());
+            // Staff lift the lock from the Security tab
+            mvc.perform(post("/api/channels/agg-1/security/unlock").header("Authorization", staffToken()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"ip\":\"" + ip + "\"}")).andExpect(status().isOk()).andExpect(jsonPath("$.unlocked").value(true));
+            from(ip, KEY, "<OTA_VehLocSearchRQ/>").andExpect(status().isOk());
+            mvc.perform(get("/api/channels/agg-1/security").header("Authorization", staffToken()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.authFailures24h").value(greaterThanOrEqualTo(ChannelSecurityGuard.MAX_FAILURES)));
+        } finally {
+            guard.unlock(ip);
+        }
+    }
+
+    @Test
+    void aSpoofedForwardedForCannotPassTheAllowList() throws Exception {
+        rules((agg, r) -> r.putArray("ipAllowlist").add("203.0.113.10"));
+        // The caller writes the allowed address first; our load balancer appends the real one last.
+        from("203.0.113.10, 198.51.100.7", KEY, "<OTA_VehLocSearchRQ/>").andExpect(status().isForbidden());
+        from("203.0.113.10", KEY, "<OTA_VehLocSearchRQ/>").andExpect(status().isOk());
+    }
+
+    @Test
+    void signedRequestsAreCheckedAndCannotBeReplayed() throws Exception {
+        String secret = hooks.rotateSecret("agg-1");
+        rules((agg, r) -> r.put("requireSignature", true));
+        String body = "<OTA_VehLocSearchRQ/>";
+        long ts = System.currentTimeMillis() / 1000;
+        String sig = "sha256=" + ChannelWebhookService.sign(secret, ts + "." + body);
+        var signed = post("/ota/v1/BKG/OTA_VehLocSearch").header("X-Api-Key", KEY).header("X-Forwarded-For", "203.0.113.20")
+            .header("X-NCT-Timestamp", String.valueOf(ts)).header("X-NCT-Signature", sig).contentType(MediaType.APPLICATION_XML).content(body);
+        mvc.perform(signed).andExpect(status().isOk());
+        mvc.perform(signed).andExpect(status().isUnauthorized()).andExpect(content().string(containsString("replay")));
+        from("203.0.113.20", KEY, body).andExpect(status().isUnauthorized()).andExpect(content().string(containsString("requires signed requests")));
+        long old = ts - 3600;
+        mvc.perform(post("/ota/v1/BKG/OTA_VehLocSearch").header("X-Api-Key", KEY).header("X-Forwarded-For", "203.0.113.20")
+                .header("X-NCT-Timestamp", String.valueOf(old)).header("X-NCT-Signature", "sha256=" + ChannelWebhookService.sign(secret, old + "." + body))
+                .contentType(MediaType.APPLICATION_XML).content(body))
+            .andExpect(status().isUnauthorized()).andExpect(content().string(containsString("5 minutes")));
+        // A changed body breaks the signature
+        long now = System.currentTimeMillis() / 1000;
+        mvc.perform(post("/ota/v1/BKG/OTA_VehLocSearch").header("X-Api-Key", KEY).header("X-Forwarded-For", "203.0.113.20")
+                .header("X-NCT-Timestamp", String.valueOf(now)).header("X-NCT-Signature", "sha256=" + ChannelWebhookService.sign(secret, now + "." + body))
+                .contentType(MediaType.APPLICATION_XML).content(body + " "))
+            .andExpect(status().isUnauthorized()).andExpect(content().string(containsString("does not match")));
+        guard.unlock("203.0.113.20");
+    }
+
+    @Test
+    void aReplacedKeyKeepsWorkingUntilItsGracePeriodEnds() throws Exception {
+        rules((agg, r) -> agg.put("feedKeyHash", PartnerKeyVerifier.sha256Hex("new-key"))
+            .put("previousKeyHash", PartnerKeyVerifier.sha256Hex(KEY)).put("previousKeyExpiresAt", java.time.Instant.now().plusSeconds(3600).toString()));
+        from("203.0.113.30", KEY, "<OTA_VehLocSearchRQ/>").andExpect(status().isOk());
+        from("203.0.113.30", "new-key", "<OTA_VehLocSearchRQ/>").andExpect(status().isOk());
+        rules((agg, r) -> agg.put("previousKeyExpiresAt", java.time.Instant.now().minusSeconds(1).toString()));
+        from("203.0.113.30", KEY, "<OTA_VehLocSearchRQ/>").andExpect(status().isUnauthorized());
+        guard.unlock("203.0.113.30");
+    }
 }
