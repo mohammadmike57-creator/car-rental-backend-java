@@ -144,7 +144,7 @@ public class ChannelGateway {
         return Math.max(10, Math.min(5000, v));
     }
 
-    private static boolean ipAllowed(ChannelSnapshot ch, String remote) {
+    static boolean ipAllowed(ChannelSnapshot ch, String remote) {
         var list = ch.raw().path("bookingRules").path("ipAllowlist");
         if (!list.isArray() || list.isEmpty()) return true;
         for (var ip : list) if (ip.asText("").trim().equals(remote)) return true;

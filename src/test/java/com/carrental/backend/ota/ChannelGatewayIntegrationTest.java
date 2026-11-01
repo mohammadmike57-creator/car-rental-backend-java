@@ -77,6 +77,7 @@ class ChannelGatewayIntegrationTest {
             aqj.with("openingHours").putObject(d).put("open", "08:00").put("close", "20:00");
         }
         rules.put("oneWayFee", 30);
+        rules.put("rateLimitPerMinute", 5000);   // the suite sends far more than a broker would in a minute
         stateService.applyPatch(M.writeValueAsString(M.createObjectNode().set("ops", M.createArrayNode()
             .add(M.createObjectNode().put("op", "set").put("key", "fleet").set("value", state.get("fleet")))
             .add(M.createObjectNode().put("op", "set").put("key", "stopSales").set("value", state.get("stopSales")))
@@ -1009,5 +1010,68 @@ class ChannelGatewayIntegrationTest {
         rules((agg, r) -> agg.put("previousKeyExpiresAt", java.time.Instant.now().minusSeconds(1).toString()));
         from("203.0.113.30", KEY, "<OTA_VehLocSearchRQ/>").andExpect(status().isUnauthorized());
         guard.unlock("203.0.113.30");
+    }
+
+    // ======================================================================= review fixes
+
+    @Test
+    void aKeyAndReferenceUsedInTestingStillBookForRealAfterGoLive() throws Exception {
+        seedChannel("testing", "test");
+        String rq = direct(Y + "-05-01T10:00:00", Y + "-05-04T10:00:00", "AE-500", "Roe");
+        String test = send("/ota/v1/BKG/OTA_VehRes", rq, "Idempotency-Key", "AE-500");
+        assertTrue(test.contains("Target=\"Test\""), test);
+        // Go live: the broker's booking numbers restart, so the same key and reference come again
+        rules((agg, r) -> { agg.put("status", "active"); ((ObjectNode) agg.get("connectionDetails")).put("environment", "production"); });
+        String live = send("/ota/v1/BKG/OTA_VehRes", rq, "Idempotency-Key", "AE-500");
+        assertTrue(live.contains("Target=\"Production\"") && live.contains("<Success/>"), "a real booking, not the test one replayed: " + live);
+        assertEquals(1, reservations().path(Y).path("May").size(), "the live booking is in the reservations list");
+        assertNotEquals(firstConf(test), firstConf(live));
+        // Retrieving by the reference finds the live booking
+        String ret = send("/ota/v1/BKG/OTA_VehRetRes", "<OTA_VehRetResRQ><VehRetResRQCore><UniqueID Type=\"16\" ID=\"AE-500\"/></VehRetResRQCore></OTA_VehRetResRQ>");
+        assertTrue(ret.contains(firstConf(live)), ret);
+    }
+
+    static String firstConf(String xml) {
+        int i = xml.indexOf("ConfID Type=\"14\" ID=\"");
+        return xml.substring(i + 21, xml.indexOf('"', i + 21));
+    }
+
+    @Test
+    void badDatesInStaffDataDoNotBreakSearches() throws Exception {
+        ArrayNode fleet = (ArrayNode) M.readTree(stateService.getFullState()).path("fleet");
+        ((ObjectNode) fleet.get(0)).put("registrationExpiry", "31/12/2027");
+        ArrayNode stops = M.createArrayNode();
+        stops.addObject().put("id", "x").put("type", "vehicle").put("target", "v1").put("startDate", "soon").put("endDate", "later");
+        stateService.applyPatch(M.writeValueAsString(M.createObjectNode().set("ops", M.createArrayNode()
+            .add(M.createObjectNode().put("op", "set").put("key", "fleet").set("value", fleet))
+            .add(M.createObjectNode().put("op", "set").put("key", "stopSales").set("value", stops)))));
+        String a = send("/ota/v1/BKG/OTA_VehAvailRate", avail("BD"));
+        assertTrue(a.contains("<Success/>") && a.contains("Code=\"SDAR\""), a);
+    }
+
+    @Test
+    void timesWithAnOffsetAreConvertedToTheStationsTime() {
+        assertEquals(java.time.LocalDateTime.parse(Y + "-05-01T10:00"), OtaRequestParser.parseDateTime(Y + "-05-01T07:00:00Z", "t"));
+        assertEquals(java.time.LocalDateTime.parse(Y + "-05-01T10:00"), OtaRequestParser.parseDateTime(Y + "-05-01T10:00:00+03:00", "t"));
+        assertEquals(java.time.LocalDateTime.parse(Y + "-05-01T10:00"), OtaRequestParser.parseDateTime(Y + "-05-01T10:00:00", "t"));
+    }
+
+    @Test
+    void aWrongExpectedTotalIsAClearErrorNotAServerError() throws Exception {
+        String head = "<Header><RequestID>N</RequestID><ChannelCode>BKG</ChannelCode></Header><Credentials><ApiKey>" + KEY + "</ApiKey></Credentials>";
+        mvc.perform(post("/xml/v1/ReservationCreate").contentType(MediaType.APPLICATION_XML).content("<ReservationCreateRequest>" + head
+                + "<BrokerReference>N-1</BrokerReference><Itinerary><PickupLocationCode>AMM</PickupLocationCode><PickupDateTime>" + Y
+                + "-06-01T10:00:00</PickupDateTime><ReturnDateTime>" + Y + "-06-04T10:00:00</ReturnDateTime><VehicleGroupCode>SDAR</VehicleGroupCode></Itinerary>"
+                + "<Customer><FirstName>A</FirstName><LastName>B</LastName></Customer><ExpectedTotalAmount>about 100</ExpectedTotalAmount></ReservationCreateRequest>"))
+            .andExpect(status().isBadRequest()).andExpect(content().string(containsString("ExpectedTotalAmount must be a number")));
+    }
+
+    @Test
+    void theRatePullEndpointsFollowTheAllowListToo() throws Exception {
+        rules((agg, r) -> r.putArray("ipAllowlist").add("203.0.113.10"));
+        mvc.perform(get("/ota/v1/BKG/ratesheet").header("X-Api-Key", KEY).header("X-Forwarded-For", "198.51.100.9"))
+            .andExpect(status().isForbidden());
+        mvc.perform(get("/ota/v1/BKG/ratesheet").header("X-Api-Key", KEY).header("X-Forwarded-For", "203.0.113.10"))
+            .andExpect(status().isOk());
     }
 }

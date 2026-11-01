@@ -86,7 +86,8 @@ public final class OtaRequestParser {
     public static LocalDateTime parseDateTime(String value, String field) {
         if (value == null || value.isBlank()) throw new InvalidRequestException(field + " is required");
         try {
-            return OffsetDateTime.parse(value).toLocalDateTime(); // with offset / Z
+            // With an offset (or Z): the same instant in the stations' time zone, so 10:00Z is 13:00 in Amman, never 10:00.
+            return OffsetDateTime.parse(value).atZoneSameInstant(ChannelRules.DEFAULT_ZONE).toLocalDateTime();
         } catch (DateTimeParseException ignored) {
             // fall through to local date-time
         }

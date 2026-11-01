@@ -15,6 +15,7 @@ import java.util.Optional;
 public interface ChannelBookingRepository extends JpaRepository<ChannelBooking, Long> {
     Optional<ChannelBooking> findByChannelIdAndIdempotencyKey(String channelId, String key);
     Optional<ChannelBooking> findFirstByChannelIdAndBrokerReference(String channelId, String ref);
+    Optional<ChannelBooking> findFirstByChannelIdAndBrokerReferenceAndSandbox(String channelId, String ref, boolean sandbox);
     Optional<ChannelBooking> findByReservationNumber(String number);
     Optional<ChannelBooking> findFirstByStateReservationId(String id);
     List<ChannelBooking> findByChannelIdOrderByCreatedAtDesc(String channelId, Pageable page);

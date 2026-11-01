@@ -180,8 +180,12 @@ public class ChannelWebhookService {
     // ------------------------------------------------------------- delivery
 
     void deliverDue() {
+        // One broker whose endpoint is down must not hold up the others: after a failure, that address's other
+        // events wait for the next round instead of each spending its own 15-second timeout now.
+        Set<String> down = new HashSet<>();
         for (ChannelWebhookDelivery d : deliveries.findTop50ByStatusAndNextAttemptAtBeforeOrderByNextAttemptAtAsc(ChannelWebhookDelivery.Status.PENDING, Instant.now())) {
-            attempt(d);
+            if (down.contains(d.getUrl())) continue;
+            if (attempt(d).getStatus() != ChannelWebhookDelivery.Status.DELIVERED) down.add(d.getUrl());
         }
     }
 

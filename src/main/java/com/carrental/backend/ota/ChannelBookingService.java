@@ -222,6 +222,8 @@ public class ChannelBookingService {
         if (key.isEmpty() && ref.isEmpty()) throw ChannelError.INVALID_REQUEST.ex("An Idempotency-Key or a broker reference is required");
         if (key.isEmpty()) key = "REF:" + ref;
         if (key.length() > 150 || ref.length() > 100) throw ChannelError.INVALID_REQUEST.ex("Idempotency key or broker reference is too long");
+        // Test and live bookings never share keys: a key used in the sandbox must not return that test booking after go-live.
+        if (c.sandbox()) key = "SBX:" + key;
         String hash = sha256(canonical(req));
 
         bookingLock.lock();
@@ -235,7 +237,7 @@ public class ChannelBookingService {
                 return replay(same.get());
             }
             if (!ref.isEmpty()) {
-                Optional<ChannelBooking> byRef = bookings.findFirstByChannelIdAndBrokerReference(c.channel().id(), ref);
+                Optional<ChannelBooking> byRef = bookings.findFirstByChannelIdAndBrokerReferenceAndSandbox(c.channel().id(), ref, c.sandbox());
                 if (byRef.isPresent()) throw ChannelError.DUPLICATE_REFERENCE.ex("Broker reference " + ref + " is already booked as " + byRef.get().getReservationNumber());
             }
 
@@ -784,8 +786,8 @@ public class ChannelBookingService {
         Set<String> models = new HashSet<>();
         int usable = 0;
         for (JsonNode car : cars) {
-            String reg = car.path("registrationExpiry").asText("");
-            boolean expired = reg.length() >= 10 && LocalDate.parse(reg.substring(0, 10)).isBefore(to.toLocalDate());
+            LocalDate reg = day(car.path("registrationExpiry").asText(""));
+            boolean expired = reg != null && reg.isBefore(to.toLocalDate());
             if (expired || vehicleStopped(c.channel().stopSales(), car.path("id").asText(), from.toLocalDate(), to.toLocalDate())) continue;
             usable++;
             if (!car.path("licensePlate").asText("").isBlank()) plates.add(car.path("licensePlate").asText().trim().toUpperCase(Locale.ROOT));
@@ -840,9 +842,9 @@ public class ChannelBookingService {
     private static boolean vehicleStopped(JsonNode stops, String carId, LocalDate from, LocalDate to) {
         for (JsonNode s : stops) {
             if (!"vehicle".equals(s.path("type").asText()) || !carId.equals(s.path("target").asText())) continue;
-            String a = s.path("startDate").asText(""), b = s.path("endDate").asText("");
-            if (a.length() < 10 || b.length() < 10) continue;
-            if (!LocalDate.parse(a.substring(0, 10)).isAfter(to) && !LocalDate.parse(b.substring(0, 10)).isBefore(from)) return true;
+            LocalDate a = day(s.path("startDate").asText("")), b = day(s.path("endDate").asText(""));
+            if (a == null || b == null) continue;
+            if (!a.isAfter(to) && !b.isBefore(from)) return true;
         }
         return false;
     }
@@ -1047,6 +1049,8 @@ public class ChannelBookingService {
         if (ref.isEmpty()) throw ChannelError.INVALID_REQUEST.ex("A reservation number or broker reference is required");
         Optional<ChannelBooking> b = bookings.findByReservationNumber(ref.toUpperCase(Locale.ROOT))
             .filter(x -> x.getChannelId().equals(c.channel().id()));
+        // A broker reference is looked up in the caller's environment first (the same reference may exist as a test booking).
+        if (b.isEmpty()) b = bookings.findFirstByChannelIdAndBrokerReferenceAndSandbox(c.channel().id(), ref, c.sandbox());
         if (b.isEmpty()) b = bookings.findFirstByChannelIdAndBrokerReference(c.channel().id(), ref);
         return b.orElseThrow(() -> ChannelError.RESERVATION_NOT_FOUND.ex("No reservation " + ref + " for this channel"));
     }
@@ -1100,7 +1104,9 @@ public class ChannelBookingService {
         if (o.getExtras() != null) for (String p : o.getExtras().split(",")) {
             if (p.isBlank()) continue;
             String[] kv = p.split(":");
-            extras.add(new ExtraRequest(kv[0], kv.length > 1 ? Integer.parseInt(kv[1]) : 1));
+            int qty = 1;
+            try { if (kv.length > 1) qty = Integer.parseInt(kv[1]); } catch (NumberFormatException ignored) { /* keep 1 */ }
+            extras.add(new ExtraRequest(kv[0], qty));
         }
         List<String> covers = new ArrayList<>();
         if (o.getCoverages() != null) for (String cv : o.getCoverages().split(",")) if (!cv.isBlank()) covers.add(cv);
@@ -1247,6 +1253,12 @@ public class ChannelBookingService {
         return out;
     }
 
+    /** A YYYY-MM-DD date at the start of a value, or null when it is missing or not a date (staff data is not trusted to be clean). */
+    static LocalDate day(String s) {
+        if (s == null || s.length() < 10) return null;
+        try { return LocalDate.parse(s.substring(0, 10)); } catch (Exception e) { return null; }
+    }
+
     static LocalDateTime parseLocal(String s) {
         if (s == null || s.length() < 10) return null;
         try {
@@ -1272,7 +1284,7 @@ public class ChannelBookingService {
         Driver d = r.driver();
         return String.join("|", trim(r.offerId()), trim(r.brokerReference()),
             s == null ? "" : s.pickupLocation() + "," + s.returnLocation() + "," + s.pickupAt() + "," + s.returnAt() + "," + s.vehicleGroup() + "," + s.extras()
-                + "," + s.coverageCodes() + "," + trim(s.promoCode()) + "," + s.driverAge(),
+                + "," + s.coverageCodes() + "," + trim(s.promoCode()) + "," + s.driverAge() + "," + trim(s.currency()),
             cu == null ? "" : trim(cu.firstName()) + "," + trim(cu.lastName()) + "," + trim(cu.email()) + "," + trim(cu.phone()),
             d == null ? "" : trim(d.dateOfBirth()) + "," + trim(d.licenceNumber()),
             r.expectedTotal() == null ? "" : r.expectedTotal().stripTrailingZeros().toPlainString());
