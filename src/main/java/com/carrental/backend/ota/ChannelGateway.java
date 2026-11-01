@@ -93,8 +93,10 @@ public class ChannelGateway {
                 guard.succeeded(remote);
                 if (ch.raw().path("bookingRules").path("requireSignature").asBoolean(false)) {
                     String secret = secrets.findById(ch.id()).map(ChannelSecret::getWebhookSecret).orElse(null);
-                    guard.verifySignature(secret, http.getHeader("X-NCT-Timestamp"), http.getHeader("X-NCT-Signature"), body,
-                        System.currentTimeMillis() / 1000);
+                    // The signature covers the raw body as sent: for SOAP that is the whole envelope, not the OTA message inside it.
+                    Object raw = http.getAttribute(ChannelTrafficService.RAW_BODY_ATTR);
+                    guard.verifySignature(secret, http.getHeader("X-NCT-Timestamp"), http.getHeader("X-NCT-Signature"),
+                        raw instanceof String r ? r : body, System.currentTimeMillis() / 1000);
                 }
             }
             if ("paused".equalsIgnoreCase(ch.status())) throw ChannelError.PERMISSION_DENIED.ex("Distribution to this channel is paused");

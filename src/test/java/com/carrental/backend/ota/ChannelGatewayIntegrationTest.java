@@ -1074,4 +1074,24 @@ class ChannelGatewayIntegrationTest {
         mvc.perform(get("/ota/v1/BKG/ratesheet").header("X-Api-Key", KEY).header("X-Forwarded-For", "203.0.113.10"))
             .andExpect(status().isOk());
     }
+
+    @Test
+    void signedRequestsWorkOverSoapToo() throws Exception {
+        String secret = hooks.rotateSecret("agg-1");
+        rules((agg, r) -> r.put("requireSignature", true));
+        String env = soap11("BKG", KEY, "<OTA_VehLocSearchRQ xmlns=\"http://www.opentravel.org/OTA/2003/05\"/>");
+        long ts = System.currentTimeMillis() / 1000;
+        mvc.perform(post("/ota/v1/BKG/soap").contentType(MediaType.TEXT_XML).header("X-Forwarded-For", "203.0.113.70")
+                .header("X-NCT-Timestamp", String.valueOf(ts)).header("X-NCT-Signature", "sha256=" + ChannelWebhookService.sign(secret, ts + "." + env))
+                .content(env))
+            .andExpect(status().isOk()).andExpect(content().string(containsString("Code=\"AQJ\"")));
+        guard.unlock("203.0.113.70");
+    }
+
+    @Test
+    void deeplyNestedXmlIsRefused() {
+        String deep = "<a>".repeat(200) + "</a>".repeat(200);
+        assertThrows(OtaRequestParser.InvalidRequestException.class, () -> OtaRequestParser.parse("<OTA_VehAvailRateRQ>" + deep + "</OTA_VehAvailRateRQ>"));
+        assertThrows(ChannelError.ChannelException.class, () -> OtaBookingXml.parse("<OTA_VehResRQ>" + deep + "</OTA_VehResRQ>", "OTA_VehResRQ"));
+    }
 }

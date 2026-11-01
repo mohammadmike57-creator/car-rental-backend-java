@@ -205,7 +205,7 @@ public class ChannelWebhookService {
                 .header("X-NCT-Signature", "sha256=" + sign(secret, ts + "." + d.getPayload()))
                 .POST(HttpRequest.BodyPublishers.ofString(d.getPayload(), StandardCharsets.UTF_8))
                 .build();
-            HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> res = http.send(req, OutboundUrlGuard.boundedReply());
             d.setLastHttpStatus(res.statusCode());
             if (res.statusCode() >= 200 && res.statusCode() < 300) {
                 d.setStatus(ChannelWebhookDelivery.Status.DELIVERED);
