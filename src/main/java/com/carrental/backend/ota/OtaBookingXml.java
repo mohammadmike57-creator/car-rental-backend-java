@@ -245,7 +245,7 @@ public final class OtaBookingXml {
             }
             x.close();
             x.open("TPA_Extensions").el("PickUp", String.valueOf(l.pickup())).el("Return", String.valueOf(l.dropOff()))
-             .el("LocationType", l.type()).el("AfterHours", null, "PickUp", l.afterHoursPickup(), "Return", l.afterHoursReturn(),
+             .el("LocationType", l.type()).el("StationType", l.type()).el("AfterHours", null, "PickUp", l.afterHoursPickup(), "Return", l.afterHoursReturn(),
                  "Fee", l.afterHoursFee().signum() > 0 ? l.afterHoursFee() : null);
             if (l.specialDays() != null && !l.specialDays().isEmpty()) {
                 x.open("SpecialDays");
@@ -343,6 +343,7 @@ public final class OtaBookingXml {
             x.close();
             x.open("VehAvailInfo").open("TPA_Extensions")
              .el("Availability", null, "Count", o.available(), "Held", o.held() ? "true" : null)
+             .el("AvailableCount", String.valueOf(o.available()))   // the same number as an element, for brokers that read it so
              .el("Deposit", null, "Amount", o.depositAmount(), "CurrencyCode", o.currency())
              .el("Excess", null, "Amount", o.excessAmount(), "CurrencyCode", o.currency())
              .el("PaymentType", o.paymentType())
