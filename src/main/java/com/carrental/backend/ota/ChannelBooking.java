@@ -40,8 +40,8 @@ public class ChannelBooking {
     @Column(length = 40) private String promoCode;
     @Column(length = 20) private String status;                                // last status told to the broker
     @Column(length = 200) private String customerName;
-    @Lob @Column(columnDefinition = "TEXT") private String createResponse;    // JSON view replayed on retries
-    @Lob @Column(columnDefinition = "TEXT") private String sandboxReservation; // sandbox only: the booking itself
+    @Column(columnDefinition = "TEXT") private String createResponse;    // JSON view replayed on retries
+    @Column(columnDefinition = "TEXT") private String sandboxReservation; // sandbox only: the booking itself
     private boolean sandbox;
     @Column(nullable = false) private Instant createdAt;
     private Instant updatedAt;

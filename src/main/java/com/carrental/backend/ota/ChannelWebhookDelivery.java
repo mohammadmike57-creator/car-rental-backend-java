@@ -22,7 +22,7 @@ public class ChannelWebhookDelivery {
     @Column(length = 30) private String reservationNumber;
     @Column(length = 100) private String brokerReference;
     @Column(length = 500) private String url;
-    @Lob @Column(columnDefinition = "TEXT", nullable = false) private String payload;
+    @Column(columnDefinition = "TEXT", nullable = false) private String payload;
     @Enumerated(EnumType.STRING) @Column(nullable = false, length = 12) private Status status;
     private int attempts;
     private Instant nextAttemptAt;
