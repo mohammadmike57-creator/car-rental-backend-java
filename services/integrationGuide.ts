@@ -141,6 +141,11 @@ ${section(2, 'Authentication and security', `
   <ul>
     <li>HTTPS only (TLS 1.2+). Credentials are never sent in the URL.</li>
     <li>Send your API key in <code>Authorization: Bearer &lt;key&gt;</code> or <code>X-Api-Key: &lt;key&gt;</code>. In OTA messages it may travel as <code>POS/Source/RequestorID MessagePassword</code>, over SOAP as a WS-Security <code>UsernameToken</code> (Username = <code>${esc(ch)}</code>, Password = key), and in native XML as <code>Credentials/ApiKey</code>. Keys are issued per channel and stored only as a hash.</li>
+    <li>On request you also receive a <b>test key</b> (it starts with <code>nct_test_</code>) for your test system. It works at the same addresses but is always answered in the sandbox, also after go-live: bookings made with it are never real.</li>
+    <li><b>Key replacement without downtime:</b> when we issue a new key, the previous one keeps working for an agreed switch-over period (normally 3 days), unless the key was exposed.</li>
+    <li><b>Brute-force protection:</b> an address that fails authentication 10 times within 10 minutes is refused for 15 minutes, whatever key it sends (<code>AUTH_FAILED</code>, "Too many failed attempts").</li>
+    <li><b>IP allow-list</b> (recommended for production): send us your outgoing server addresses and only they can use your key.</li>
+    <li><b>Signed requests</b> (optional, agreed per partner): send <code>X-NCT-Timestamp</code> (Unix seconds) and <code>X-NCT-Signature: sha256=&lt;hex HMAC-SHA256(secret, timestamp + "." + raw body)&gt;</code>, the same scheme as our webhooks. A signature older than 5 minutes, or one already used, is refused.</li>
     <li>Rate limit: <b>${r.rateLimitPerMinute}</b> requests per minute${agg.bookingRules?.ipAllowlist?.length ? `; requests are accepted only from ${esc(agg.bookingRules.ipAllowlist.join(', '))}` : ''}. Over the limit you receive <code>RATE_LIMIT_EXCEEDED</code> (HTTP 429): retry with exponential back-off.</li>
     <li>Every response carries an <code>X-Request-ID</code> header; quote it when contacting support. You may send your own <code>X-Request-ID</code>.</li>
     <li>XML is parsed with DTDs and external entities disabled; requests over 64 KB are refused.</li>
@@ -301,6 +306,7 @@ ${section(9, 'Idempotency and retries', `
     <li>Retrying with the same key and the same details returns the original booking — never a second one. The same key with different details returns <code>DUPLICATE_REFERENCE</code>.</li>
     <li>A broker reference can be booked only once; to change a booking, modify it.</li>
     <li>Cancelling a booking that is already cancelled succeeds and returns the cancelled booking.</li>
+    <li>Test (sandbox) and live bookings never share keys or references: a key or reference used while testing can be used again for a real booking after go-live.</li>
     <li>Safe to retry: <code>SYSTEM_ERROR</code>, <code>RATE_LIMIT_EXCEEDED</code> and network timeouts, with the same key.</li>
   </ul>`)}
 
@@ -356,6 +362,7 @@ ${section(12, 'Vehicles, stations, covers, tax and promotions', `
 </Vehicle>`)}
   <h3>Stations</h3>
   <p><code>OTA_VehLocSearchRS</code> returns per station: address, <code>Telephone</code>, <code>Position Latitude/Longitude</code>, opening hours as <code>OperationSchedules/OperationTime Mon="true" Start="08:00" End="20:00"</code>, and in TPA_Extensions the station type and whether after-hours pick-up / return is possible (with its fee). A pick-up or return outside the opening hours is refused with <code>INVALID_DATE</code>, unless after-hours service is offered, in which case the after-hours fee is added to the price.</p>
+  <p><b>Holidays and special days</b> for the next year come in the same answer: OTA <code>TPA_Extensions/SpecialDays/SpecialDay Date="${y}-05-01" Closed="true" Note="Labour Day"</code>, or <code>Closed="false" Open="10:00" Close="14:00"</code> for shorter hours; native XML <code>SpecialDays/SpecialDay</code>; JSON <code>special_days</code>. On a closed day no pick-up or return is possible, not even after hours (<code>INVALID_DATE</code>); on a special day those hours replace the usual ones. Refresh the station list daily.</p>
   ${table(['Station', 'Type', 'Phone', 'Opening hours', 'After hours'], locs.map(l => {
     const h = l.openingHours || {};
     const days = Object.entries(h).filter(([, v]) => v && !v.closed).map(([d, v]) => `${d.slice(0, 1).toUpperCase()}${d.slice(1)} ${v!.open}–${v!.close}`);
@@ -462,7 +469,7 @@ ${section(18, 'Technical contract: messages, versions and time', `
     ['Reservation list (reconciliation)', '—', '<code>ReservationList</code>', '<code>GET /reservations</code>'],
   ])}
   <h3>Time</h3>
-  <p>Every date-time you send and receive is the <b>local time of the station</b> (time zone <code>${esc(tz)}</code>), written without an offset (<code>${y}-05-01T10:00:00</code>). Booking cut-off, cancellation deadlines and no-show marking are counted in that time zone. Response <code>TimeStamp</code> attributes are UTC.</p>
+  <p>Every date-time you send and receive is the <b>local time of the station</b> (time zone <code>${esc(tz)}</code>), written without an offset (<code>${y}-05-01T10:00:00</code>). A time sent with an offset or <code>Z</code> is converted to the station's time first (<code>${y}-05-01T07:00:00Z</code> is 10:00 in Amman). Booking cut-off, cancellation deadlines and no-show marking are counted in that time zone. Response <code>TimeStamp</code> attributes are UTC.</p>
   <h3>Price validity and inventory</h3>
   <ul>
     <li>An offer fixes the <b>price</b> for ${r.offerValidityMinutes} minutes. It does <b>not</b> reserve a car: availability is guaranteed only when we confirm the booking.</li>
