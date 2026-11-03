@@ -64,7 +64,7 @@ class PaymentPageControllerTest {
             .andExpect(content().contentTypeCompatibleWith("text/html"))
             .andExpect(content().string(containsString("Payment received")))
             .andExpect(content().string(containsString("250.00 USD")))
-            .andExpect(content().string(containsString("Franchise fee &lt;November&gt;")))
+            .andExpect(content().string(not(containsString("Franchise fee"))))
             .andExpect(content().string(containsString(PaymentPageController.shortRef(String.valueOf(p.getId())))))
             .andExpect(content().string(not(containsString("Whitelabel"))));
         Payment after = payments.findById(p.getId()).orElseThrow();

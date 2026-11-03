@@ -75,13 +75,11 @@ public class PaymentPageController {
         String amount = session.getAmountTotal() == null ? null
             : BigDecimal.valueOf(session.getAmountTotal()).divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP).toPlainString()
               + " " + (session.getCurrency() == null ? "" : session.getCurrency().toUpperCase(Locale.ROOT));
-        String what = record.map(Payment::getDescription).filter(d -> d != null && !d.isBlank()).orElse(null);
         String ref = record.map(p -> shortRef(String.valueOf(p.getId()))).orElse(session.getId().substring(Math.max(0, session.getId().length() - 10)).toUpperCase(Locale.ROOT));
         String email = session.getCustomerDetails() != null ? session.getCustomerDetails().getEmail() : null;
 
         StringBuilder rows = new StringBuilder();
         if (amount != null) rows.append(row("Amount", amount));
-        if (what != null) rows.append(row("For", what));
         rows.append(row("Date", LocalDateTime.now(ZoneId.of("Asia/Amman")).format(WHEN)));
         rows.append(row("Reference", ref));
         if (email != null && !email.isBlank()) rows.append(row("Receipt sent to", email));
