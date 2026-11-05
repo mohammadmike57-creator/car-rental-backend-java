@@ -884,6 +884,22 @@ class ChannelGatewayIntegrationTest {
     }
 
     @Test
+    void staffCanDeleteABrokerBookingFromOtaXml() throws Exception {
+        String r = send("/ota/v1/BKG/OTA_VehRes", direct(Y + "-05-01T10:00:00", Y + "-05-04T10:00:00", "DEL-X", "Roe"));
+        assertTrue(r.contains("<Success/>"), r);
+        String number = r.substring(r.indexOf("ID=\"RSV-") + 4, r.indexOf('"', r.indexOf("ID=\"RSV-") + 4));
+        assertEquals(1, reservations().path(Y).path("May").size());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/channels/agg-1/bookings/" + number))
+            .andExpect(status().isUnauthorized());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/channels/agg-2/bookings/" + number)
+                .header("Authorization", staffToken())).andExpect(status().isNotFound());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/channels/agg-1/bookings/" + number)
+                .header("Authorization", staffToken())).andExpect(status().isOk());
+        assertEquals(0, reservations().path(Y).path("May").size(), "its copy in the reservations list is gone too");
+        assertTrue(bookings.findByReservationNumber(number).isEmpty());
+    }
+
+    @Test
     void staffCannotDeleteABrokerBookingItIsCancelledInstead() throws Exception {
         String r = send("/ota/v1/BKG/OTA_VehRes", direct(Y + "-05-01T10:00:00", Y + "-05-04T10:00:00", "DEL-1", "Roe"));
         assertTrue(r.contains("<Success/>"), r);

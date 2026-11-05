@@ -180,6 +180,23 @@ public class StateService {
         }
     }
 
+    /** Removes a broker booking's copy from the reservations list (staff deleted it under OTA XML). */
+    public synchronized void removeBrokerReservation(String id) {
+        if (id == null || id.isBlank()) return;
+        AppData appData = loadMain();
+        try {
+            ObjectNode root = (ObjectNode) objectMapper.readTree(appData.getData());
+            JsonNode existing = findReservation(root, id);
+            if (existing == null || existing.path("channelReservationNumber").asText("").isBlank()) return;   // only broker bookings
+            autoBackup(appData);
+            removeReservation(root, id, null);
+            appData.setData(objectMapper.writeValueAsString(root));
+            appDataRepository.save(appData);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to remove the booking: " + e.getMessage(), e);
+        }
+    }
+
     /** The booking with this id, wherever it is filed, or null. */
     private JsonNode findReservation(ObjectNode root, String id) {
         if (id.isEmpty()) return null;

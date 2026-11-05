@@ -38,10 +38,15 @@ public class ChannelGatewayAdminController {
     private final ChannelJobs jobs;
     private final ChannelTrafficService traffic;
     private final ChannelSecurityGuard guard;
+    private final com.carrental.backend.service.StateService state;
+    private final com.carrental.backend.audit.ActivityService activity;
 
     public ChannelGatewayAdminController(ChannelStateReader channels, ChannelBookingRepository bookings, ChannelWebhookService webhooks,
                                          ChannelWebhookRepository deliveries, ChannelCertificationService certification,
-                                         ChannelBookingService core, ChannelJobs jobs, ChannelTrafficService traffic, ChannelSecurityGuard guard) {
+                                         ChannelBookingService core, ChannelJobs jobs, ChannelTrafficService traffic, ChannelSecurityGuard guard,
+                                         com.carrental.backend.service.StateService state, com.carrental.backend.audit.ActivityService activity) {
+        this.state = state;
+        this.activity = activity;
         this.guard = guard;
         this.traffic = traffic;
         this.core = core;
@@ -76,6 +81,23 @@ public class ChannelGatewayAdminController {
             out.add(m);
         }
         return ResponseEntity.ok(out);
+    }
+
+    /**
+     * Deletes a broker booking from our records (OTA XML bookings list, and its copy in the reservations list if it
+     * has one). The broker is not told: a confirmed booking should be cancelled first.
+     */
+    @DeleteMapping("/bookings/{reservationNumber}")
+    public ResponseEntity<?> deleteBooking(@PathVariable String channelId, @PathVariable String reservationNumber, Authentication auth) {
+        if (!allowed(auth)) return forbidden();
+        var found = bookings.findByReservationNumber(reservationNumber).filter(b -> channelId.equals(b.getChannelId()));
+        if (found.isEmpty()) return ResponseEntity.status(404).body(Map.of("error", "No booking " + reservationNumber + " on this channel."));
+        ChannelBooking b = found.get();
+        if (!b.isSandbox()) state.removeBrokerReservation(b.getStateReservationId());
+        bookings.delete(b);
+        activity.record(auth == null ? "staff" : auth.getName(), "DELETE", "reservation",
+            (b.isSandbox() ? "[Sandbox] " : "") + "Deleted broker booking " + reservationNumber + " (" + b.getStatus() + ") from OTA XML", reservationNumber, null);
+        return ResponseEntity.ok(Map.of("deleted", reservationNumber));
     }
 
     @GetMapping("/webhooks")
