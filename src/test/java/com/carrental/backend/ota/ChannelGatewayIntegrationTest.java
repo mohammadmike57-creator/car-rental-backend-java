@@ -884,6 +884,42 @@ class ChannelGatewayIntegrationTest {
     }
 
     @Test
+    void brokerCallsCarryCorrelationAndVersionHeadersWithTheSameBody() throws Exception {
+        String ping = "<OTA_PingRQ EchoToken=\"P\"><EchoData>hello</EchoData></OTA_PingRQ>";
+        var res = mvc.perform(post("/ota/v1/BKG/OTA_Ping").contentType(MediaType.APPLICATION_XML).content(ping)
+                .header("X-Api-Key", KEY).header("X-Correlation-ID", "hog-7731904")).andReturn().getResponse();
+        assertEquals(200, res.getStatus());
+        assertEquals("hog-7731904", res.getHeader("X-Correlation-ID"), "the broker's own ID comes back");
+        assertEquals("ota-1.0", res.getHeader("X-API-Version"));
+        assertTrue(res.getContentAsString().contains("<EchoData>hello</EchoData>"), "body unchanged");
+        // Without one, an ID is made; an unsafe one is not reused.
+        var made = mvc.perform(post("/ota/v1/BKG/OTA_Ping").contentType(MediaType.APPLICATION_XML).content(ping)
+                .header("X-Api-Key", KEY).header("X-Correlation-ID", "<script>")).andReturn().getResponse();
+        assertTrue(made.getHeader("X-Correlation-ID").startsWith("cor-"), made.getHeader("X-Correlation-ID"));
+        // Staff screens and the hosting health check are untouched.
+        var plain = mvc.perform(get("/health")).andReturn().getResponse();
+        assertEquals("OK", plain.getContentAsString());
+        assertNull(plain.getHeader("X-Correlation-ID"));
+    }
+
+    @Test
+    void publicErrorCatalogueAndPlatformHealth() throws Exception {
+        String errors = mvc.perform(get("/ota/errors")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        JsonNode list = M.readTree(errors).path("errors");
+        assertEquals(ChannelError.values().length, list.size());
+        JsonNode auth = null;
+        for (JsonNode e : list) if ("AUTH_FAILED".equals(e.path("code").asText())) auth = e;
+        assertNotNull(auth);
+        assertEquals(401, auth.path("httpStatus").asInt());
+        assertEquals("497", auth.path("otaCode").asText());
+        JsonNode health = M.readTree(mvc.perform(get("/ota/health")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertEquals("UP", health.path("status").asText());
+        assertEquals("UP", health.path("components").path("database").path("status").asText());
+        assertEquals("Asia/Amman", health.path("timeZone").asText());
+        assertFalse(errors.contains(KEY) || health.toString().contains(KEY), "no secrets");
+    }
+
+    @Test
     void staffCanDeleteABrokerBookingFromOtaXml() throws Exception {
         String r = send("/ota/v1/BKG/OTA_VehRes", direct(Y + "-05-01T10:00:00", Y + "-05-04T10:00:00", "DEL-X", "Roe"));
         assertTrue(r.contains("<Success/>"), r);
