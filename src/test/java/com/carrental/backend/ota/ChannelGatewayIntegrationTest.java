@@ -1210,6 +1210,107 @@ class ChannelGatewayIntegrationTest {
         assertTrue(ChannelCommercial.of(M.createObjectNode().set("commercial", M.createObjectNode().put("markupPercent", 0))).neutral());
     }
 
+    /** Sends one request of the Postman collection as Postman would: variables filled, its own auth and headers. */
+    org.springframework.mock.web.MockHttpServletResponse postman(JsonNode collection, String folder, String name, java.util.Map<String, String> vars) throws Exception {
+        JsonNode item = null;
+        for (JsonNode f : collection.path("item")) if (f.path("name").asText().endsWith(folder)) for (JsonNode i : f.path("item")) if (name.equals(i.path("name").asText())) item = i;
+        assertNotNull(item, folder + " / " + name);
+        JsonNode r = item.path("request");
+        java.util.function.UnaryOperator<String> fill = in -> {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\{\\{([$A-Za-z]+)}}").matcher(in);
+            StringBuilder out = new StringBuilder();
+            while (m.find()) {
+                String k = m.group(1);
+                String v = "$guid".equals(k) ? java.util.UUID.randomUUID().toString() : "$timestamp".equals(k) ? String.valueOf(System.nanoTime()) : vars.get(k);
+                assertNotNull(v, "variable " + k + " in " + name);
+                m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(v));
+            }
+            return m.appendTail(out).toString();
+        };
+        String url = fill.apply(r.path("url").path("raw").asText());
+        var rq = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request(org.springframework.http.HttpMethod.valueOf(r.path("method").asText()), java.net.URI.create(url));
+        for (JsonNode h : r.path("header")) rq = rq.header(h.path("key").asText(), fill.apply(h.path("value").asText()));
+        String auth = r.path("auth").path("type").asText(collection.path("auth").path("type").asText());
+        if ("basic".equals(auth)) rq = rq.header("Authorization", "Basic " + java.util.Base64.getEncoder().encodeToString((vars.get("clientId") + ":" + vars.get("clientSecret")).getBytes()));
+        else if ("bearer".equals(auth)) rq = rq.header("Authorization", "Bearer " + vars.get("accessToken"));
+        JsonNode body = r.path("body");
+        if ("raw".equals(body.path("mode").asText())) rq = rq.content(fill.apply(body.path("raw").asText()));
+        if ("urlencoded".equals(body.path("mode").asText())) for (JsonNode f : body.path("urlencoded")) rq = rq.param(f.path("key").asText(), f.path("value").asText());
+        return mvc.perform(rq).andReturn().getResponse();
+    }
+
+    @Test
+    void developerPortalAndPostmanCollectionWorkAsPublished() throws Exception {
+        var page = mvc.perform(get("/ota/developers")).andExpect(status().isOk()).andReturn().getResponse();
+        String html = page.getContentAsString();
+        assertTrue(page.getContentType().startsWith("text/html") && page.getHeader("Content-Security-Policy").contains("frame-ancestors 'none'"));
+        assertTrue(html.contains("UR-Drive Jordan") && html.contains("https://www.nctrental.com/api/v3/postman.json") && html.contains("X-URD-Signature"), "brand and links");
+        assertFalse(html.contains("NCT") || html.contains("__BASE__") || html.contains("__BRAND__") || html.contains(KEY), "no system name, placeholders or keys");
+
+        JsonNode col = M.readTree(mvc.perform(get("/api/v3/postman.json")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertEquals("https://schema.getpostman.com/json/collection/v2.1.0/collection.json", col.path("info").path("schema").asText());
+        assertFalse(col.toString().contains("NCT"), "brokers never see the system name");
+
+        // REST v3 exactly as the collection sends it.
+        String[] client = oauthClient("sandbox");
+        java.util.Map<String, String> v = new java.util.HashMap<>(java.util.Map.of("baseUrl", "", "clientId", client[0], "clientSecret", client[1],
+            "pickUpLocation", "AMM", "pickUpAt", Y + "-06-01T10:00", "returnAt", Y + "-06-05T10:00", "listFrom", Y + "-06-01", "listTo", Y + "-06-30"));
+        v.put("channel", "BKG"); v.put("apiKey", KEY);
+        var tok = postman(col, "Authentication", "Get access token", v);
+        assertEquals(200, tok.getStatus(), tok.getContentAsString());
+        v.put("accessToken", M.readTree(tok.getContentAsString()).path("access_token").asText());
+        for (String n : List.of("Health", "Locations", "Location detail", "Vehicle groups", "Extras", "Insurance covers")) {
+            var r = postman(col, "Reference data", n, v);
+            assertEquals(200, r.getStatus(), n + ": " + r.getContentAsString());
+        }
+        JsonNode found = M.readTree(postman(col, "Availability and quotes", "Search availability", v).getContentAsString());
+        for (JsonNode o : found.path("data").path("offers")) if ("Available".equals(o.path("status").asText())) { v.put("quoteId", o.path("quoteId").asText()); break; }
+        assertNotNull(v.get("quoteId"), found.toString());
+        assertEquals(200, postman(col, "Availability and quotes", "Quote", v).getStatus());
+        assertEquals(200, postman(col, "Availability and quotes", "Quote rules", v).getStatus());
+        var made = postman(col, "Reservations", "Book the quote", v);
+        assertEquals(201, made.getStatus(), made.getContentAsString());
+        v.put("reservationId", M.readTree(made.getContentAsString()).path("data").path("reservationId").asText());
+        for (String n : List.of("Retrieve", "List by pick-up date", "Modify", "Cancel")) {
+            var r = postman(col, "Reservations", n, v);
+            assertEquals(200, r.getStatus(), n + ": " + r.getContentAsString());
+        }
+        assertEquals(200, postman(col, "Inventory", "Inventory", v).getStatus());
+        assertEquals(200, postman(col, "Webhooks v2", "List subscriptions", v).getStatus());
+        assertEquals(200, postman(col, "Webhooks v2", "Dead-letter list", v).getStatus());
+
+        // OTA XML 2024A exactly as the collection sends it.
+        for (String n : List.of("Ping", "Locations")) assertTrue(postman(col, "OTA XML 2024A", n, v).getContentAsString().contains("<Success/>"), n);
+        String avail = postman(col, "OTA XML 2024A", "Availability and rates", v).getContentAsString();
+        java.util.regex.Matcher offer = java.util.regex.Pattern.compile("Type=\"16\" ID=\"(OFF-[^\"]+)\"").matcher(avail);
+        assertTrue(offer.find(), "the collection's own pattern finds the offer: " + avail);
+        v.put("offerId", offer.group(1));
+        String booked = postman(col, "OTA XML 2024A", "Book", v).getContentAsString();
+        java.util.regex.Matcher rsv = java.util.regex.Pattern.compile("ID=\"(RSV-[^\"]+)\"").matcher(booked);
+        assertTrue(booked.contains("<Success/>") && rsv.find(), booked);
+        v.put("reservationId", rsv.group(1));
+        assertTrue(postman(col, "OTA XML 2024A", "Retrieve", v).getContentAsString().contains("<Success/>"));
+        assertTrue(postman(col, "OTA XML 2024A", "Cancel", v).getContentAsString().contains("<Success/>"));
+    }
+
+    @Test
+    void signedRequestsAcceptTheDocumentedHeaderNames() throws Exception {
+        String secret = hooks.rotateSecret("agg-1");
+        rules((agg, r) -> r.put("requireSignature", true));
+        try {
+            String body = avail("URD1");
+            long ts = System.currentTimeMillis() / 1000;
+            String ok = mvc.perform(post("/ota/2024A/BKG/OTA_VehAvailRate").header("X-Api-Key", KEY).header("X-URD-Timestamp", String.valueOf(ts))
+                .header("X-URD-Signature", "sha256=" + ChannelWebhookService.sign(secret, ts + "." + body)).contentType(MediaType.APPLICATION_XML).content(body))
+                .andReturn().getResponse().getContentAsString();
+            assertTrue(ok.contains("<Success/>"), ok);
+            String missing = send("/ota/2024A/BKG/OTA_VehAvailRate", avail("URD2"));
+            assertTrue(missing.contains("X-URD-Signature") && !missing.contains("NCT"), missing);
+        } finally {
+            rules((agg, r) -> r.put("requireSignature", false));
+        }
+    }
+
     @Test
     void publicErrorCatalogueAndPlatformHealth() throws Exception {
         String errors = mvc.perform(get("/ota/errors")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();

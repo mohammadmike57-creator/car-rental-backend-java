@@ -18,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <ul>
  *   <li>Brute-force lockout: an address that fails authentication {@value #MAX_FAILURES} times within
  *       {@value #WINDOW_MINUTES} minutes is refused for {@value #LOCK_MINUTES} minutes, whatever key it sends.</li>
- *   <li>Signed requests (optional per channel): X-NCT-Timestamp and X-NCT-Signature = sha256 HMAC of
+ *   <li>Signed requests (optional per channel): X-URD-Timestamp and X-URD-Signature (X-NCT-* also accepted) = sha256 HMAC of
  *       "timestamp.body" with the channel's signing secret, at most 5 minutes old, and never accepted twice.</li>
  * </ul>
  * State is held in memory: a restart clears lockouts, which only ever makes the service more permissive for a moment.
@@ -85,15 +85,15 @@ public class ChannelSecurityGuard {
     public void verifySignature(String secret, String timestamp, String signature, String body, long nowSeconds) {
         if (secret == null || secret.isBlank()) throw ChannelError.AUTH_FAILED.ex("Signed requests are required but no signing secret exists yet");
         if (timestamp == null || timestamp.isBlank() || signature == null || signature.isBlank()) {
-            throw ChannelError.AUTH_FAILED.ex("Send X-NCT-Timestamp and X-NCT-Signature: this channel requires signed requests");
+            throw ChannelError.AUTH_FAILED.ex("Send X-URD-Timestamp and X-URD-Signature: this channel requires signed requests");
         }
         long ts;
-        try { ts = Long.parseLong(timestamp.trim()); } catch (NumberFormatException e) { throw ChannelError.AUTH_FAILED.ex("X-NCT-Timestamp must be Unix seconds"); }
-        if (Math.abs(nowSeconds - ts) > SIGNATURE_WINDOW_SECONDS) throw ChannelError.AUTH_FAILED.ex("X-NCT-Timestamp is more than 5 minutes from our clock");
+        try { ts = Long.parseLong(timestamp.trim()); } catch (NumberFormatException e) { throw ChannelError.AUTH_FAILED.ex("X-URD-Timestamp must be Unix seconds"); }
+        if (Math.abs(nowSeconds - ts) > SIGNATURE_WINDOW_SECONDS) throw ChannelError.AUTH_FAILED.ex("X-URD-Timestamp is more than 5 minutes from our clock");
         String expected = "sha256=" + ChannelWebhookService.sign(secret, ts + "." + (body == null ? "" : body));
         String given = signature.trim();
         if (!MessageDigest.isEqual(expected.getBytes(StandardCharsets.US_ASCII), given.getBytes(StandardCharsets.US_ASCII))) {
-            throw ChannelError.AUTH_FAILED.ex("X-NCT-Signature does not match the request");
+            throw ChannelError.AUTH_FAILED.ex("X-URD-Signature does not match the request");
         }
         long nowMs = nowSeconds * 1000;
         seenSignatures.entrySet().removeIf(e -> e.getValue() < nowMs);

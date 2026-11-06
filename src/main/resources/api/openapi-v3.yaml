@@ -18,6 +18,7 @@ tags:
   - { name: Availability and quotes }
   - { name: Reservations }
   - { name: Inventory }
+  - { name: Webhooks, description: 'Signed with HMAC-SHA256 (URD-Webhook-Signature), retried for 72 hours, then the dead-letter list' }
   - { name: Platform }
 paths:
   /health:
@@ -156,6 +157,62 @@ paths:
       security: [{ oauth2: [inventory:read] }]
       parameters: [{ name: days, in: query, schema: { type: integer, minimum: 1, maximum: 365 } }]
       responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /webhooks/subscriptions:
+    get:
+      tags: [Webhooks]
+      summary: Your webhook subscriptions in this environment
+      security: [{ oauth2: [webhooks:manage] }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+    post:
+      tags: [Webhooks]
+      summary: Subscribe an HTTPS address; the signing secret is returned once
+      security: [{ oauth2: [webhooks:manage] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/SubscriptionRequest' } } }
+      responses: { '201': { $ref: '#/components/responses/Ok' }, '400': { $ref: '#/components/responses/Error' } }
+  /webhooks/subscriptions/{subscriptionId}:
+    patch:
+      tags: [Webhooks]
+      summary: Change the address or events, or pause (status PAUSED) and resume (ACTIVE)
+      security: [{ oauth2: [webhooks:manage] }]
+      parameters: [{ $ref: '#/components/parameters/SubscriptionId' }]
+      requestBody: { content: { application/json: { schema: { $ref: '#/components/schemas/SubscriptionRequest' } } } }
+      responses: { '200': { $ref: '#/components/responses/Ok' }, '404': { $ref: '#/components/responses/Error' } }
+    delete:
+      tags: [Webhooks]
+      summary: Delete the subscription
+      security: [{ oauth2: [webhooks:manage] }]
+      parameters: [{ $ref: '#/components/parameters/SubscriptionId' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /webhooks/subscriptions/{subscriptionId}/rotate-secret:
+    post:
+      tags: [Webhooks]
+      summary: New signing secret; the old one also signs for 72 hours
+      security: [{ oauth2: [webhooks:manage] }]
+      parameters: [{ $ref: '#/components/parameters/SubscriptionId' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /webhooks/subscriptions/{subscriptionId}/test:
+    post:
+      tags: [Webhooks]
+      summary: Send a signed webhook.test event now
+      security: [{ oauth2: [webhooks:manage] }]
+      parameters: [{ $ref: '#/components/parameters/SubscriptionId' }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /webhooks/deliveries:
+    get:
+      tags: [Webhooks]
+      summary: Recent deliveries with status, attempts and the dead-letter list (status DEAD_LETTER)
+      security: [{ oauth2: [webhooks:manage] }]
+      parameters: [{ name: status, in: query, schema: { type: string, enum: [PENDING, DELIVERED, DEAD_LETTER] } }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
+  /webhooks/deliveries/{deliveryId}/replay:
+    post:
+      tags: [Webhooks]
+      summary: Send a delivery again (also from the dead-letter list)
+      security: [{ oauth2: [webhooks:manage] }]
+      parameters: [{ name: deliveryId, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { $ref: '#/components/responses/Ok' } }
 components:
   securitySchemes:
     oauth2:
@@ -177,6 +234,7 @@ components:
     IfNoneMatch: { name: If-None-Match, in: header, schema: { type: string } }
     QuoteId: { name: quoteId, in: path, required: true, schema: { type: string } }
     ReservationId: { name: reservationId, in: path, required: true, schema: { type: string } }
+    SubscriptionId: { name: subscriptionId, in: path, required: true, schema: { type: string, examples: [whsub_8f2k1] } }
   responses:
     Ok:
       description: Success envelope
@@ -222,6 +280,14 @@ components:
         expectedTotal: { type: number }
         flightNumber: { type: string }
         comments: { type: string }
+    SubscriptionRequest:
+      type: object
+      properties:
+        url: { type: string, format: uri, description: 'HTTPS only; private addresses are refused' }
+        events:
+          type: array
+          items: { type: string, enum: [reservation.created, reservation.confirmed, reservation.modified, reservation.cancelled, reservation.no_show, reservation.picked_up, agreement.created, agreement.closed, inventory.updated] }
+        status: { type: string, enum: [ACTIVE, PAUSED] }
     Envelope:
       type: object
       required: [status, requestId, correlationId, apiVersion, timestamp]

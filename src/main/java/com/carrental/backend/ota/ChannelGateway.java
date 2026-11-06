@@ -99,7 +99,8 @@ public class ChannelGateway {
                     String secret = secrets.findById(ch.id()).map(ChannelSecret::getWebhookSecret).orElse(null);
                     // The signature covers the raw body as sent: for SOAP that is the whole envelope, not the OTA message inside it.
                     Object raw = http.getAttribute(ChannelTrafficService.RAW_BODY_ATTR);
-                    guard.verifySignature(secret, http.getHeader("X-NCT-Timestamp"), http.getHeader("X-NCT-Signature"),
+                    // X-URD-* is the documented name; X-NCT-* stays accepted for the brokers that already sign with it.
+                    guard.verifySignature(secret, header(http, "X-URD-Timestamp", "X-NCT-Timestamp"), header(http, "X-URD-Signature", "X-NCT-Signature"),
                         raw instanceof String r ? r : body, System.currentTimeMillis() / 1000);
                 }
             }
@@ -175,4 +176,9 @@ public class ChannelGateway {
     }
 
     private static long ms(long start) { return (System.nanoTime() - start) / 1_000_000; }
+
+    private static String header(HttpServletRequest http, String name, String legacy) {
+        String v = http.getHeader(name);
+        return v != null && !v.isBlank() ? v : http.getHeader(legacy);
+    }
 }
