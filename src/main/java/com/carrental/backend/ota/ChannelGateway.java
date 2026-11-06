@@ -72,6 +72,7 @@ public class ChannelGateway {
             : requestId.length() > 80 ? requestId.substring(0, 80) : requestId;
         String remote = clientIp(http);
         ChannelSnapshot ch = null;
+        ChannelLanguage.set(ChannelLanguage.detect(http, body));
         try {
             if (channelCode == null || channelCode.isBlank()) throw ChannelError.AUTH_FAILED.ex("Channel code is required");
             Optional<ChannelSnapshot> found = channels.find(channelCode);
@@ -122,6 +123,8 @@ public class ChannelGateway {
             log.error("Channel {} {} failed ({})", channelCode, messageType, rid, e);
             // No stack traces or internal details to partners.
             return failed(ch, http, messageType, body, rid, 500, ChannelError.SYSTEM_ERROR.ex("Internal error, reference " + rid), error, start, remote, sandbox);
+        } finally {
+            ChannelLanguage.clear();
         }
     }
 
@@ -136,7 +139,9 @@ public class ChannelGateway {
     }
 
     private static ResponseEntity<String> respond(int status, Rendered r, String rid) {
-        return ResponseEntity.status(status).contentType(r.type()).header("Cache-Control", "no-store").header("X-Request-ID", rid).body(r.body());
+        var rs = ResponseEntity.status(status).contentType(r.type()).header("Cache-Control", "no-store").header("X-Request-ID", rid);
+        if (ChannelLanguage.arabic()) rs = rs.header("Content-Language", "ar");    // only when asked: other answers are unchanged
+        return rs.body(r.body());
     }
 
     private boolean allow(ChannelSnapshot ch, String remote) {

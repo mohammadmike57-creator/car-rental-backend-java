@@ -36,12 +36,15 @@ public class ChannelJobs {
     private final ChannelTrafficService traffic;
     private final boolean enabled;
     private long lastPurge;
+    private long lastRetention;
+    private final ChannelRetentionService retention;
     private ScheduledExecutorService worker;
 
     public ChannelJobs(ChannelStateReader channels, ChannelBookingService core, ChannelWebhookService webhooks,
-                       ChannelInventorySnapshotRepository snapshots, ChannelTrafficService traffic,
+                       ChannelInventorySnapshotRepository snapshots, ChannelTrafficService traffic, ChannelRetentionService retention,
                        @Value("${channel.jobs.enabled:true}") boolean enabled) {
         this.traffic = traffic;
+        this.retention = retention;
         this.channels = channels;
         this.core = core;
         this.webhooks = webhooks;
@@ -63,6 +66,9 @@ public class ChannelJobs {
     void tick() {
         if (System.currentTimeMillis() - lastPurge > 6 * 3600_000L) {
             try { traffic.purge(); lastPurge = System.currentTimeMillis(); } catch (Exception e) { log.warn("Traffic purge: {}", e.getMessage()); }
+        }
+        if (System.currentTimeMillis() - lastRetention > 24 * 3600_000L) {
+            try { retention.run(); lastRetention = System.currentTimeMillis(); } catch (Exception e) { log.warn("Retention clean-up: {}", e.getMessage()); }
         }
         try {
             for (ChannelSnapshot ch : channels.all()) {

@@ -155,11 +155,20 @@ public class ChannelGatewayAdminController {
     }
 
     @GetMapping("/statement")
-    public ResponseEntity<?> statement(@PathVariable String channelId, @RequestParam String month, Authentication auth) {
+    public ResponseEntity<?> statement(@PathVariable String channelId, @RequestParam String month,
+                                       @RequestParam(required = false) String currency, Authentication auth) {
         if (!allowed(auth)) return forbidden();
         java.time.YearMonth ym;
         try { ym = java.time.YearMonth.parse(month); } catch (Exception e) { return ResponseEntity.badRequest().body(Map.of("error", "month must be YYYY-MM")); }
-        return channels.find(channelId).<ResponseEntity<?>>map(ch -> ResponseEntity.ok(core.statement(ch, ym))).orElseGet(this::notFound);
+        return channels.find(channelId).<ResponseEntity<?>>map(ch -> {
+            var st = core.statement(ch, ym);
+            if (currency == null || currency.isBlank() || currency.trim().equalsIgnoreCase(ch.currency())) return ResponseEntity.ok(st);
+            String cur = currency.trim().toUpperCase(java.util.Locale.ROOT);
+            java.math.BigDecimal rate = core.context(ch, false).rules().currencies().get(cur);
+            if (rate == null) return ResponseEntity.badRequest().body(Map.of("error",
+                "No " + cur + " rate for this channel. Add it under Booking API → Currencies (" + cur + " per 1 " + ch.currency() + ")."));
+            return ResponseEntity.ok(ChannelBookingService.settleIn(st, cur, rate));
+        }).orElseGet(this::notFound);
     }
 
     @GetMapping("/inventory")

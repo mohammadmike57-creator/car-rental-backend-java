@@ -81,7 +81,16 @@ public class ChannelBookingService {
         return c.rules().locations().stream().map(l -> {
             List<OpeningHours> hours = new ArrayList<>();
             l.hours().forEach((d, h) -> hours.add(new OpeningHours(d.name().substring(0, 3), h.open().toString(), h.close().toString())));
-            return new Location(l.code(), l.name(), l.address(), l.pickup(), l.dropOff(), l.type(), l.phone(), l.latitude(), l.longitude(),
+            ChannelRules.Location t = l;
+            String name = l.name(), address = l.address();
+            if (ChannelLanguage.arabic()) {
+                for (JsonNode raw : c.channel().raw().path("bookingRules").path("locations")) {
+                    if (!t.code().equalsIgnoreCase(raw.path("code").asText("").trim())) continue;
+                    name = ChannelLanguage.pick(name, raw.path("nameAr").asText(""));
+                    address = ChannelLanguage.pick(address, raw.path("addressAr").asText(""));
+                }
+            }
+            return new Location(l.code(), name, address, l.pickup(), l.dropOff(), l.type(), l.phone(), l.latitude(), l.longitude(),
                 hours, l.afterHoursPickup(), l.afterHoursReturn(), l.afterHoursFee(), specialDays(c, l));
         }).toList();
     }
@@ -184,7 +193,7 @@ public class ChannelBookingService {
         List<Extra> extras = extras(c).stream().map(e -> new Extra(e.code(), e.name(), cv(e.dailyPrice(), fx), cv(e.maxPerRental(), fx))).toList();
         return new RateRule(s, o, extras, location(c, s.pickupLocation()), location(c, s.returnLocation()),
             c.rules().minDriverAge(), c.rules().maxDriverAge(), c.rules().minLeadHours(), c.rules().maxRentalDays(),
-            cv(c.rules().modificationFee(), fx), c.channel().terms());
+            cv(c.rules().modificationFee(), fx), ChannelLanguage.pick(c.channel().terms(), c.channel().raw().path("termsAndConditionsAr").asText("")));
     }
 
     public Location location(Ctx c, String code) {
@@ -529,6 +538,27 @@ public class ChannelBookingService {
             commission = commission.add(com);
         }
         out.put("bookings", counted).put("cancelled", cancelled).put("noShows", noShows)
+           .put("gross", gross).put("fees", fees).put("commission", commission).put("net", gross.subtract(commission));
+        return out;
+    }
+
+    /**
+     * The statement converted to the settlement currency (e.g. USD) at the channel's rate: every amount
+     * is converted on its own and the totals are the sums of the converted rows, so the sheet adds up.
+     */
+    static ObjectNode settleIn(ObjectNode st, String currency, BigDecimal rate) {
+        ObjectNode out = st.deepCopy();
+        String[] fields = {"total", "fee", "commissionable", "commission", "net"};
+        BigDecimal gross = BigDecimal.ZERO, fees = BigDecimal.ZERO, commission = BigDecimal.ZERO;
+        for (JsonNode r : out.path("rows")) {
+            ObjectNode row = (ObjectNode) r;
+            for (String f : fields) row.put(f, row.path(f).decimalValue().multiply(rate).setScale(2, RoundingMode.HALF_UP));
+            gross = gross.add(row.path("commissionable").decimalValue());
+            commission = commission.add(row.path("commission").decimalValue());
+            String stt = row.path("status").asText("");
+            if ("CANCELLED".equals(stt) || "NO_SHOW".equals(stt)) fees = fees.add(row.path("fee").decimalValue());
+        }
+        out.put("channelCurrency", st.path("currency").asText()).put("currency", currency).put("exchangeRate", rate)
            .put("gross", gross).put("fees", fees).put("commission", commission).put("net", gross.subtract(commission));
         return out;
     }

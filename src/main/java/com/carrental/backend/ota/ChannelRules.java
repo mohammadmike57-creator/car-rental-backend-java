@@ -170,7 +170,7 @@ public record ChannelRules(
         r.path("groupDetails").fields().forEachRemaining(e -> {
             JsonNode d = e.getValue();
             details.put(e.getKey().toUpperCase(Locale.ROOT), new GroupDetail(intOrNull(d, "seats"), intOrNull(d, "doors"), intOrNull(d, "largeBags"),
-                intOrNull(d, "smallBags"), text(d, "fuel"), text(d, "pictureUrl"), text(d, "description")));
+                intOrNull(d, "smallBags"), text(d, "fuel"), text(d, "pictureUrl"), ChannelLanguage.pick(text(d, "description"), d.path("descriptionAr").asText(""))));
         });
         List<Allotment> allots = new ArrayList<>();
         for (JsonNode a : r.path("allotments")) {

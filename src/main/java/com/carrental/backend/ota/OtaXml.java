@@ -146,7 +146,7 @@ public final class OtaXml {
             String id = e.path("id").asText("");
             String code = e.path("otaEquipType").asText("");
             double cap = e.path("maxPerRental").asDouble(0);
-            out.add(new Extra(id, code.isBlank() ? id : code, e.path("name").asText(id),
+            out.add(new Extra(id, code.isBlank() ? id : code, ChannelLanguage.text(e, "name", id),
                 money(e.path("price").asDouble(0)), cap > 0 ? money(cap) : null));
         }
         return out;

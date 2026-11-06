@@ -44,6 +44,7 @@ class ChannelGatewayIntegrationTest {
     @Autowired StateService stateService;
     @Autowired ChannelBookingRepository bookings;
     @Autowired WebhookV2Service webhooksV2;
+    @Autowired ChannelRetentionService retention;
     @Autowired WebhookSubscriptionRepository subscriptions;
     @Autowired ChannelOfferRepository offers;
     @Autowired ChannelWebhookRepository webhooks;
@@ -1309,6 +1310,93 @@ class ChannelGatewayIntegrationTest {
         } finally {
             rules((agg, r) -> r.put("requireSignature", false));
         }
+    }
+
+    @Test
+    void arabicIsServedOnlyWhenTheBrokerAsksForIt() throws Exception {
+        rules((agg, r) -> {
+            ((ObjectNode) r.path("locations").get(0)).put("nameAr", "مكتب المطار").put("addressAr", "مطار الملكة علياء الدولي");
+            r.putObject("groupDetails").putObject("SDAR").put("description", "Compact sedan").put("descriptionAr", "سيارة سيدان صغيرة");
+            ((ObjectNode) agg.path("extras").get(0)).put("nameAr", "جهاز ملاحة");
+            agg.put("termsAndConditions", "Fuel: full to full.").put("termsAndConditionsAr", "الوقود: ممتلئ عند الاستلام والتسليم.");
+        });
+        String loc = "<OTA_VehLocSearchRQ xmlns=\"http://www.opentravel.org/OTA/2003/05\"%s/>";
+        var en = mvc.perform(post("/ota/2024A/BKG/OTA_VehLocSearch").header("X-Api-Key", KEY).header("Accept-Language", "ar-JO")
+            .contentType(MediaType.APPLICATION_XML).content(loc.formatted(""))).andReturn().getResponse();
+        assertTrue(en.getContentAsString().contains("Airport Office") && !en.getContentAsString().contains("مكتب"), "an XML header alone never switches the language");
+        assertNull(en.getHeader("Content-Language"), "answers for brokers that do not ask stay exactly as before");
+        var ar = mvc.perform(post("/ota/2024A/BKG/OTA_VehLocSearch").header("X-Api-Key", KEY)
+            .contentType(MediaType.APPLICATION_XML).content(loc.formatted(" PrimaryLangID=\"ar\""))).andReturn().getResponse();
+        ar.setCharacterEncoding("UTF-8");
+        assertTrue(ar.getContentAsString().contains("مكتب المطار") && ar.getContentAsString().contains("مطار الملكة علياء الدولي"), ar.getContentAsString());
+        assertTrue(ar.getContentAsString().contains("Aqaba Branch"), "no Arabic entered = English");
+        assertEquals("ar", ar.getHeader("Content-Language"));
+        String availAr = avail("AR1").replace("EchoToken=", "PrimaryLangID=\"ar\" EchoToken=");
+        var a = mvc.perform(post("/ota/2024A/BKG/OTA_VehAvailRate").header("X-Api-Key", KEY).contentType(MediaType.APPLICATION_XML).content(availAr)).andReturn().getResponse();
+        a.setCharacterEncoding("UTF-8");
+        assertTrue(a.getContentAsString().contains("جهاز ملاحة"), "extras in Arabic: " + a.getContentAsString());
+        assertFalse(send("/ota/v1/BKG/OTA_VehAvailRate", avail("EN1")).contains("جهاز"), "v1 without the attribute is unchanged");
+
+        String tok = accessToken(oauthClient("sandbox"), null);
+        var v3 = mvc.perform(get("/api/v3/locations").header("Authorization", tok).header("Accept-Language", "ar")).andReturn().getResponse();
+        v3.setCharacterEncoding("UTF-8");
+        assertTrue(v3.getContentAsString().contains("مكتب المطار"), v3.getContentAsString());
+        var err = mvc.perform(get("/api/v3/locations/NOPE").header("Authorization", tok).header("Accept-Language", "ar")).andReturn().getResponse();
+        err.setCharacterEncoding("UTF-8");
+        JsonNode e = M.readTree(err.getContentAsString()).path("error");
+        assertEquals("INVALID_LOCATION", e.path("code").asText());
+        assertEquals("رمز الموقع غير معروف أو غير فعال", e.path("localizedMessage").asText());
+        assertFalse(M.readTree(mvc.perform(get("/api/v3/locations/NOPE").header("Authorization", tok)).andReturn().getResponse().getContentAsString())
+            .path("error").has("localizedMessage"), "English by default");
+        assertEquals(ChannelError.values().length, ChannelLanguage.ERRORS_AR.size(), "every error has an Arabic text");
+    }
+
+    @Test
+    void retentionRemovesOnlyOldGatewayRecordsNeverLiveBookings() {
+        java.time.LocalDateTime old = java.time.LocalDateTime.now().minusDays(200);
+        ChannelBooking sbx = new ChannelBooking(), live = new ChannelBooking();
+        for (ChannelBooking b : List.of(sbx, live)) {
+            b.setChannelId("agg-1"); b.setReservationNumber("RSV-RET-" + (b == sbx ? "S" : "L")); b.setIdempotencyKey("ret-" + System.nanoTime());
+            b.setRequestHash("x".repeat(64)); b.setSippCode("SDAR"); b.setPickupAt(old.minusDays(3)); b.setReturnAt(old); b.setStatus("CONFIRMED");
+            b.setCreatedAt(java.time.Instant.now().minus(java.time.Duration.ofDays(203)));
+        }
+        sbx.setSandbox(true);
+        bookings.save(sbx); bookings.save(live);
+        ChannelWebhookDelivery done = new ChannelWebhookDelivery();
+        done.setEventId("evt_ret_1"); done.setChannelId("agg-1"); done.setEventType("reservation.created"); done.setPayload("{}");
+        done.setStatus(ChannelWebhookDelivery.Status.DELIVERED); done.setCreatedAt(java.time.Instant.now().minus(java.time.Duration.ofDays(120)));
+        webhooks.save(done);
+        java.util.Map<String, Object> r = retention.run();
+        assertTrue(bookings.findByReservationNumber("RSV-RET-S").isEmpty(), "old test booking removed");
+        assertTrue(bookings.findByReservationNumber("RSV-RET-L").isPresent(), "a live booking is never removed");
+        assertTrue(webhooks.findById(done.getId()).isEmpty());
+        assertTrue(((Number) r.get("sandboxBookings")).intValue() >= 1);
+        assertEquals(90, retention.policy().get("sandboxBookingDays"));
+        bookings.delete(bookings.findByReservationNumber("RSV-RET-L").orElseThrow());
+    }
+
+    @Test
+    void statementCanBeSettledInUsd() throws Exception {
+        rules((agg, r) -> { agg.put("commissionPercent", 10).put("currency", "JOD"); r.putObject("currencies").put("USD", 1.41); });
+        try { settleInUsd(); } finally { rules((agg, r) -> { agg.put("currency", "USD"); r.remove("currencies"); }); }
+    }
+
+    void settleInUsd() throws Exception {
+        String body = """
+            {"idempotency_key":"usd-1","broker_reference":"USD-1","itinerary":{"pickup_location":"AMM","pickup_at":"%s-08-01T09:00:00","return_at":"%s-08-03T09:00:00","vehicle_group":"SDAR"},
+             "customer":{"first_name":"Jane","last_name":"Smith"}}""".formatted(Y, Y);
+        mvc.perform(post("/partner/v1/BKG/reservations").header("X-Api-Key", KEY).contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isOk());
+        JsonNode jod = M.readTree(mvc.perform(get("/api/channels/agg-1/statement").param("month", Y + "-08").header("Authorization", staffToken()))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        JsonNode usd = M.readTree(mvc.perform(get("/api/channels/agg-1/statement").param("month", Y + "-08").param("currency", "USD").header("Authorization", staffToken()))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertEquals("USD", usd.path("currency").asText());
+        assertEquals(jod.path("currency").asText(), usd.path("channelCurrency").asText());
+        java.math.BigDecimal expect = jod.path("gross").decimalValue().multiply(new java.math.BigDecimal("1.41")).setScale(2, java.math.RoundingMode.HALF_UP);
+        assertEquals(0, expect.compareTo(usd.path("gross").decimalValue()), usd.toString());
+        assertEquals(0, usd.path("gross").decimalValue().subtract(usd.path("commission").decimalValue()).compareTo(usd.path("net").decimalValue()), "adds up");
+        mvc.perform(get("/api/channels/agg-1/statement").param("month", Y + "-08").param("currency", "EUR").header("Authorization", staffToken()))
+            .andExpect(status().isBadRequest());
     }
 
     @Test

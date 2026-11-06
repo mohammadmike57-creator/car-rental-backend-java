@@ -420,8 +420,11 @@ public class ApiV3Controller {
     }
 
     private static ObjectNode errorBody(String requestId, HttpServletRequest http, ChannelException e) {
-        return errorBody(requestId, http, e.error.name(), e.getMessage(), e.error.otaCode,
+        ObjectNode n = errorBody(requestId, http, e.error.name(), e.getMessage(), e.error.otaCode,
             e.error == ChannelError.SYSTEM_ERROR || e.error == ChannelError.RATE_LIMIT_EXCEEDED);
+        // Accept-Language: ar adds the catalogue meaning in Arabic; message stays English (it is the precise reason).
+        if (ChannelLanguage.arabic()) ((ObjectNode) n.path("error")).put("localizedMessage", ChannelLanguage.ERRORS_AR.get(e.error)).put("language", "ar");
+        return n;
     }
 
     private static ObjectNode errorBody(String requestId, HttpServletRequest http, String code, String message, String otaCode, boolean retryable) {
