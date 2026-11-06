@@ -1399,6 +1399,159 @@ class ChannelGatewayIntegrationTest {
             .andExpect(status().isBadRequest());
     }
 
+    // ======================================================================= phase 9: attacks and load
+
+    static void noLeak(String body) {
+        assertFalse(body.contains("Exception") || body.contains("at com.") || body.contains("org.springframework") || body.contains("/etc/passwd")
+            || body.contains("root:x:"), "no internals in an answer: " + body);
+    }
+
+    @Test
+    void hostileXmlIsRefusedEverywhereWithoutLeakingAnything() throws Exception {
+        String xxe = "<?xml version=\"1.0\"?><!DOCTYPE r [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><OTA_VehLocSearchRQ xmlns=\"http://www.opentravel.org/OTA/2003/05\">&x;</OTA_VehLocSearchRQ>";
+        String lol = "<?xml version=\"1.0\"?><!DOCTYPE l [<!ENTITY a \"aaaaaaaaaa\"><!ENTITY b \"&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;\"><!ENTITY c \"&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;\">]><OTA_PingRQ>&c;</OTA_PingRQ>";
+        String huge = "<OTA_PingRQ xmlns=\"http://www.opentravel.org/OTA/2003/05\"><EchoData>" + "A".repeat(200_000) + "</EchoData></OTA_PingRQ>";
+        String soap = "<?xml version=\"1.0\"?><!DOCTYPE r [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>&x;</s:Body></s:Envelope>";
+        for (String[] c : new String[][] {{"/ota/v1/BKG/OTA_VehLocSearch", xxe}, {"/ota/2024A/BKG/OTA_VehLocSearch", xxe}, {"/ota/2018A/BKG/OTA_Ping", lol},
+                {"/ota/v1/BKG/OTA_Ping", huge}, {"/ota/2024A/BKG/OTA_Ping", huge}, {"/ota/BKG/soap", soap}, {"/ota/v1/BKG/soap", soap}}) {
+            long t = System.nanoTime();
+            var r = mvc.perform(post(c[0]).header("X-Api-Key", KEY).contentType(MediaType.APPLICATION_XML).content(c[1])).andReturn().getResponse();
+            long ms = (System.nanoTime() - t) / 1_000_000;
+            if (c[0].endsWith("/soap")) {    // SOAP 1.1: every fault is HTTP 500 with a Client fault code, no internals
+                assertTrue(r.getContentAsString().contains("<faultcode>soap:Client</faultcode>"), c[0] + " -> " + r.getContentAsString());
+            } else {
+                assertTrue(r.getStatus() >= 400 && r.getStatus() < 500 || r.getContentAsString().contains("Error"), c[0] + " -> " + r.getStatus() + " " + r.getContentAsString());
+                assertNotEquals(500, r.getStatus(), c[0]);
+            }
+            noLeak(r.getContentAsString());
+            assertTrue(ms < 3000, c[0] + " took " + ms + " ms");
+        }
+    }
+
+    @Test
+    void forgedTamperedOrRevokedTokensNeverGetIn() throws Exception {
+        String[] client = oauthClient("production");
+        String good = accessToken(client, null);
+        String jwt = good.substring(7);
+        String[] part = jwt.split("\\.");
+        java.util.Base64.Encoder b64 = java.util.Base64.getUrlEncoder().withoutPadding();
+        String none = b64.encodeToString("{\"alg\":\"none\",\"typ\":\"JWT\"}".getBytes()) + "." + part[1] + ".";
+        String payload = new String(java.util.Base64.getUrlDecoder().decode(part[1])).replace("\"production\"", "\"sandbox\"").replace("urd_live_", "urd_lixe_");
+        String tampered = part[0] + "." + b64.encodeToString(payload.getBytes()) + "." + part[2];
+        for (String tok : List.of(none, tampered, jwt.substring(0, jwt.length() - 3) + "abc", staffToken().replace("Bearer ", ""), "", "null", "a.b.c")) {
+            var r = mvc.perform(get("/api/v3/locations").header("Authorization", "Bearer " + tok)).andReturn().getResponse();
+            assertEquals(401, r.getStatus(), "token " + tok);
+            noLeak(r.getContentAsString());
+        }
+        assertEquals(200, mvc.perform(get("/api/v3/locations").header("Authorization", good)).andReturn().getResponse().getStatus());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/channels/agg-1/oauth-clients/" + client[0])
+            .header("Authorization", staffToken())).andExpect(status().isOk());
+        assertEquals(401, mvc.perform(get("/api/v3/locations").header("Authorization", good)).andReturn().getResponse().getStatus(), "revoked = out at once");
+        // The OAuth token cannot be used on staff endpoints either.
+        assertTrue(mvc.perform(get("/api/channels/agg-1/oauth-clients").header("Authorization", good)).andReturn().getResponse().getStatus() >= 401);
+    }
+
+    @Test
+    void injectionAttemptsAreTreatedAsPlainText() throws Exception {
+        var r = mvc.perform(post("/ota/2024A/BKG/OTA_Ping").header("X-Api-Key", KEY).header("X-Correlation-ID", "abc\r\nSet-Cookie: x=1")
+            .contentType(MediaType.APPLICATION_XML).content("<OTA_PingRQ xmlns=\"http://www.opentravel.org/OTA/2003/05\"><EchoData>x</EchoData></OTA_PingRQ>")).andReturn().getResponse();
+        assertTrue(r.getHeader("X-Correlation-ID").startsWith("cor-"), "unsafe correlation ids are replaced: " + r.getHeader("X-Correlation-ID"));
+        assertNull(r.getHeader("Set-Cookie"));
+        String ref = "X' OR '1'='1'--";
+        String sur = "<script>alert(1)</script>";
+        String booked = send("/ota/v1/BKG/OTA_VehRes", direct(Y + "-09-01T10:00:00", Y + "-09-04T10:00:00", ref.replace("'", "&apos;"), sur.replace("<", "&lt;").replace(">", "&gt;")));
+        assertTrue(booked.contains("<Success/>"), booked);
+        assertFalse(booked.contains("<script>"), "markup in names is escaped");
+        String number = booked.substring(booked.indexOf("ID=\"RSV-") + 4, booked.indexOf('"', booked.indexOf("ID=\"RSV-") + 4));
+        assertEquals(ref, bookings.findByReservationNumber(number).orElseThrow().getBrokerReference(), "stored literally");
+        for (String path : List.of("/ota/v1/..%2F..%2Fetc/OTA_Ping", "/ota/2024A/B%00KG/OTA_Ping", "/ota/v1/" + "Z".repeat(300) + "/OTA_Ping")) {
+            var x = mvc.perform(post(java.net.URI.create(path)).header("X-Api-Key", KEY).contentType(MediaType.APPLICATION_XML).content("<OTA_PingRQ/>")).andReturn().getResponse();
+            assertNotEquals(500, x.getStatus(), path);
+            noLeak(x.getContentAsString());
+        }
+        String tok = accessToken(oauthClient("sandbox"), null);
+        var bad = mvc.perform(post("/api/v3/availability/search").header("Authorization", tok).contentType(MediaType.APPLICATION_JSON).content("{\"pickUp\": [1,2,")).andReturn().getResponse();
+        assertEquals(400, bad.getStatus(), bad.getContentAsString());
+        noLeak(bad.getContentAsString());
+    }
+
+    @Test
+    void webhooksCannotBePointedAtOurOwnNetwork() throws Exception {
+        String tok = accessToken(oauthClient("sandbox"), null);
+        for (String url : List.of("http://example.com/hook", "https://127.0.0.1/hook", "https://169.254.169.254/latest/meta-data", "https://10.0.0.5/x",
+                "https://localhost/x", "https://[::1]/x", "https://192.168.1.10/x", "file:///etc/passwd")) {
+            var r = mvc.perform(post("/api/v3/webhooks/subscriptions").header("Authorization", tok).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"url\":\"" + url + "\",\"events\":[\"reservation.created\"]}")).andReturn().getResponse();
+            assertEquals(400, r.getStatus(), url + " -> " + r.getContentAsString());
+        }
+    }
+
+    @Test
+    void staffEndpointsNeedStaffAndRateLimitsHold() throws Exception {
+        for (String path : List.of("/api/channels/agg-1/oauth-clients", "/api/channel-platform/retention", "/api/channels/agg-1/statement?month=2027-01",
+                "/api/channels/agg-1/traffic")) {
+            int st = mvc.perform(get(path)).andReturn().getResponse().getStatus();
+            assertTrue(st == 401 || st == 403, path + " -> " + st);
+        }
+        rules((agg, r) -> r.put("rateLimitPerMinute", 3));
+        try {
+            int limited = 0;
+            for (int i = 0; i < 8; i++) {
+                var r = mvc.perform(post("/ota/2024A/BKG/OTA_Ping").header("X-Api-Key", KEY).contentType(MediaType.APPLICATION_XML)
+                    .content("<OTA_PingRQ xmlns=\"http://www.opentravel.org/OTA/2003/05\"><EchoData>x</EchoData></OTA_PingRQ>")).andReturn().getResponse();
+                if (r.getContentAsString().contains("Rate limit")) limited++;
+            }
+            assertTrue(limited >= 4, "requests over the limit are refused, " + limited);
+        } finally {
+            rules((agg, r) -> r.put("rateLimitPerMinute", 5000));
+        }
+    }
+
+    @Test
+    void twentyBrokersRacingForTheLastCarGetExactlyOneBooking() throws Exception {
+        String from = Y + "-10-05T10:00:00", to = Y + "-10-08T10:00:00";
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(20);
+        java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+        List<java.util.concurrent.Future<String>> out = new java.util.ArrayList<>();
+        for (int i = 0; i < 20; i++) {
+            int n = i;
+            out.add(pool.submit(() -> { go.await(); return send("/ota/v1/BKG/OTA_VehRes", direct(from, to, "RACE-" + n, "Racer")); }));
+        }
+        go.countDown();
+        int ok = 0;
+        for (var f : out) { String r = f.get(60, java.util.concurrent.TimeUnit.SECONDS); if (r.contains("<Success/>")) ok++; else noLeak(r); }
+        pool.shutdown();
+        assertEquals(1, ok, "one car, one booking: never a double booking");
+    }
+
+    @Test
+    void searchStaysFastUnderParallelLoad() throws Exception {
+        int threads = 16, perThread = 15;
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(threads);
+        List<Long> times = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        java.util.concurrent.atomic.AtomicInteger errors = new java.util.concurrent.atomic.AtomicInteger();
+        List<java.util.concurrent.Future<?>> fs = new java.util.ArrayList<>();
+        long all = System.nanoTime();
+        for (int t = 0; t < threads; t++) fs.add(pool.submit(() -> {
+            for (int i = 0; i < perThread; i++) {
+                long s = System.nanoTime();
+                String r = send("/ota/2024A/BKG/OTA_VehAvailRate", avail("L" + i));
+                times.add((System.nanoTime() - s) / 1_000_000);
+                if (!r.contains("<Success/>")) errors.incrementAndGet();
+            }
+            return null;
+        }));
+        for (var f : fs) f.get(120, java.util.concurrent.TimeUnit.SECONDS);
+        pool.shutdown();
+        long wall = (System.nanoTime() - all) / 1_000_000;
+        java.util.List<Long> sorted = new java.util.ArrayList<>(times); java.util.Collections.sort(sorted);
+        long p50 = sorted.get(sorted.size() / 2), p95 = sorted.get((int) (sorted.size() * 0.95)), max = sorted.get(sorted.size() - 1);
+        System.out.printf("LOAD: %d searches, %d threads, %d ms wall, %.1f/s, p50 %d ms, p95 %d ms, max %d ms, errors %d%n",
+            sorted.size(), threads, wall, sorted.size() * 1000.0 / wall, p50, p95, max, errors.get());
+        assertEquals(0, errors.get());
+        assertTrue(p95 < 2000, "p95 " + p95 + " ms");
+    }
+
     @Test
     void publicErrorCatalogueAndPlatformHealth() throws Exception {
         String errors = mvc.perform(get("/ota/errors")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
