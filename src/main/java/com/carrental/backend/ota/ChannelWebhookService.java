@@ -58,8 +58,9 @@ public class ChannelWebhookService {
 
     public ChannelWebhookService(ChannelWebhookRepository deliveries, ChannelSecretRepository secrets, ChannelBookingRepository bookings,
                                  ChannelStateReader channels, ChannelOfferRepository offers, @Lazy ChannelBookingService core,
-                                 WebhookV2Service v2) {
+                                 WebhookV2Service v2, @Lazy OutboundConnectorService connectors) {
         this.v2 = v2;
+        this.connectors = connectors;
         this.deliveries = deliveries;
         this.secrets = secrets;
         this.bookings = bookings;
@@ -91,7 +92,11 @@ public class ChannelWebhookService {
     // ------------------------------------------------------------- events
 
     /** Queues an event for the channel's webhook, if it has one and subscribes to this event. */
+    private final OutboundConnectorService connectors;
+
     public void emit(ChannelBookingService.Ctx c, String event, Reservation r) {
+        // Outbound booking notifications to the broker's own system (live bookings only).
+        try { connectors.onEvent(c, event, r); } catch (Exception e) { log.warn("Connectors: could not queue {}: {}", event, e.getMessage()); }
         // Webhooks v2 (REST/JSON v3 subscriptions), next to the channel's own webhook below.
         try {
             v2.fanOut(c.channel().id(), c.code(), c.sandbox(), event, r.reservationId(), r.brokerReference(), r.version(), ApiV3Controller.JSON.valueToTree(r));

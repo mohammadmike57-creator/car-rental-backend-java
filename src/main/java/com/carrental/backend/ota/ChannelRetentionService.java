@@ -26,6 +26,10 @@ public class ChannelRetentionService {
     private final ChannelWebhookRepository webhooks;
     private final ChannelDeliveryLogRepository deliveryLog;
     private final ChannelBookingRepository bookings;
+    private ConnectorSendRepository connectorSends;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setConnectorSends(ConnectorSendRepository r) { this.connectorSends = r; }
     final int deliveredDays, deadLetterDays, deliveryLogDays, sandboxDays, trafficDays;
     private volatile Map<String, Object> last = Map.of();
 
@@ -53,6 +57,7 @@ public class ChannelRetentionService {
         out.put("deadLetterWebhooks", webhooks.purge(ChannelWebhookDelivery.Status.FAILED, now.minus(deadLetterDays, ChronoUnit.DAYS)));
         out.put("deliveryLog", deliveryLog.purge(now.minus(deliveryLogDays, ChronoUnit.DAYS)));
         out.put("sandboxBookings", bookings.purgeSandbox(LocalDateTime.now(ZoneId.of("Asia/Amman")).minusDays(sandboxDays)));
+        if (connectorSends != null) out.put("connectorMessages", connectorSends.purge(ConnectorSend.Status.PENDING, now.minus(deliveredDays, ChronoUnit.DAYS)));
         out.put("ranAt", now.toString());
         last = Map.copyOf(out);
         log.info("Gateway retention clean-up: {}", out);

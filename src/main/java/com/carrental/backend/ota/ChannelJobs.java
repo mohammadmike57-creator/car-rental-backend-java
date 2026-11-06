@@ -38,11 +38,13 @@ public class ChannelJobs {
     private long lastPurge;
     private long lastRetention;
     private final ChannelRetentionService retention;
+    private final OutboundConnectorService connectors;
     private ScheduledExecutorService worker;
 
     public ChannelJobs(ChannelStateReader channels, ChannelBookingService core, ChannelWebhookService webhooks,
                        ChannelInventorySnapshotRepository snapshots, ChannelTrafficService traffic, ChannelRetentionService retention,
-                       @Value("${channel.jobs.enabled:true}") boolean enabled) {
+                       OutboundConnectorService connectors, @Value("${channel.jobs.enabled:true}") boolean enabled) {
+        this.connectors = connectors;
         this.traffic = traffic;
         this.retention = retention;
         this.channels = channels;
@@ -67,6 +69,7 @@ public class ChannelJobs {
         if (System.currentTimeMillis() - lastPurge > 6 * 3600_000L) {
             try { traffic.purge(); lastPurge = System.currentTimeMillis(); } catch (Exception e) { log.warn("Traffic purge: {}", e.getMessage()); }
         }
+        try { connectors.tick(); } catch (Exception e) { log.warn("Outbound connectors: {}", e.getMessage()); }
         if (System.currentTimeMillis() - lastRetention > 24 * 3600_000L) {
             try { retention.run(); lastRetention = System.currentTimeMillis(); } catch (Exception e) { log.warn("Retention clean-up: {}", e.getMessage()); }
         }

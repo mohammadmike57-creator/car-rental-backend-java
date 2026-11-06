@@ -35,7 +35,8 @@ public class ApiV3Controller {
     public static final String API_VERSION = "3.0.0";
     /** JSON with an explicit UTF-8 charset: a String body would otherwise be sent as ISO-8859-1 and break names and symbols. */
     static final MediaType JSON_UTF8 = new MediaType("application", "json", StandardCharsets.UTF_8);
-    static final ObjectMapper JSON = new ObjectMapper().registerModule(new JavaTimeModule()).disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+    static final ObjectMapper JSON = new ObjectMapper().registerModule(new JavaTimeModule()).disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+        .enable(com.fasterxml.jackson.core.JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN);   // 150.00, never 1.5E+2
 
     private final ChannelGateway gateway;
     private final ChannelBookingService core;

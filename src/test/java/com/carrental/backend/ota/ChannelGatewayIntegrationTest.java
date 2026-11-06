@@ -45,6 +45,9 @@ class ChannelGatewayIntegrationTest {
     @Autowired ChannelBookingRepository bookings;
     @Autowired WebhookV2Service webhooksV2;
     @Autowired ChannelRetentionService retention;
+    @Autowired OutboundConnectorService connectorsSvc;
+    @Autowired OutboundConnectorRepository connectorRepo;
+    @Autowired ConnectorSendRepository connectorSends;
     @Autowired WebhookSubscriptionRepository subscriptions;
     @Autowired ChannelOfferRepository offers;
     @Autowired ChannelWebhookRepository webhooks;
@@ -1397,6 +1400,112 @@ class ChannelGatewayIntegrationTest {
         assertEquals(0, usd.path("gross").decimalValue().subtract(usd.path("commission").decimalValue()).compareTo(usd.path("net").decimalValue()), "adds up");
         mvc.perform(get("/api/channels/agg-1/statement").param("month", Y + "-08").param("currency", "EUR").header("Authorization", staffToken()))
             .andExpect(status().isBadRequest());
+    }
+
+    // ======================================================================= phase 4b: outbound connectors
+
+    record Sent(String url, String method, java.util.Map<String, String> headers, String body) {}
+
+    /** Every call the connectors make goes to `calls`; `answer` decides the broker's reply. */
+    java.util.List<Sent> fakeBroker(java.util.function.Function<Sent, OutboundConnectorService.Reply> answer) {
+        java.util.List<Sent> calls = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        connectorsSvc.sender = (url, method, headers, body) -> { Sent x = new Sent(url, method, headers, body); calls.add(x); return answer.apply(x); };
+        return calls;
+    }
+
+    JsonNode connector(String json) throws Exception {
+        var r = mvc.perform(post("/api/channels/agg-1/connectors").header("Authorization", staffToken()).contentType(MediaType.APPLICATION_JSON).content(json))
+            .andReturn().getResponse();
+        assertEquals(200, r.getStatus(), r.getContentAsString());
+        return M.readTree(r.getContentAsString());
+    }
+
+    @Test
+    void bookingNotificationsReachTheBrokersSystemInOrderWithItsCredentials() throws Exception {
+        var calls = fakeBroker(x -> new OutboundConnectorService.Reply(200, "{\"ok\":true}"));
+        try {
+            JsonNode c = connector("{\"type\":\"RES_NOTIFY\",\"name\":\"Broker bookings\",\"url\":\"https://api.broker.example/bookings\",\"format\":\"JSON\",\"authType\":\"BEARER\",\"secret\":\"brk-token-123\"}");
+            String list = mvc.perform(get("/api/channels/agg-1/connectors").header("Authorization", staffToken())).andReturn().getResponse().getContentAsString();
+            assertTrue(list.contains("\"hasSecret\":true") && !list.contains("brk-token-123"), "the secret is never shown again: " + list);
+            String booked = send("/ota/v1/BKG/OTA_VehRes", direct(Y + "-11-02T10:00:00", Y + "-11-05T10:00:00", "CONN-1", "Doe"));
+            String number = booked.substring(booked.indexOf("ID=\"RSV-") + 4, booked.indexOf('"', booked.indexOf("ID=\"RSV-") + 4));
+            send("/ota/v1/BKG/OTA_VehCancel", "<OTA_VehCancelRQ xmlns=\"http://www.opentravel.org/OTA/2003/05\"><VehCancelRQCore CancelType=\"Book\"><UniqueID Type=\"14\" ID=\"" + number + "\"/></VehCancelRQCore></OTA_VehCancelRQ>");
+            connectorsSvc.deliverDue();
+            connectorsSvc.deliverDue();
+            List<Sent> mine = calls.stream().filter(x -> x.url().contains("broker.example/bookings")).toList();
+            assertEquals(List.of("reservation.created", "reservation.confirmed", "reservation.cancelled"),
+                mine.stream().map(x -> x.headers().get("X-URD-Event")).toList(), "every event, in order");
+            assertTrue(mine.get(0).body().contains("\"totalAmount\":150") && !mine.get(0).body().contains("E+"), "plain amounts: " + mine.get(0).body());
+            assertEquals("Bearer brk-token-123", mine.get(0).headers().get("Authorization"));
+            assertTrue(mine.get(0).body().contains(number) && mine.get(0).body().contains("UR-Drive Jordan") && !mine.get(0).body().contains("NCT"), mine.get(0).body());
+            String sends = mvc.perform(get("/api/channels/agg-1/connectors/" + c.path("id").asText() + "/sends").header("Authorization", staffToken())).andReturn().getResponse().getContentAsString();
+            assertTrue(sends.contains("\"status\":\"SENT\""), sends);
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/channels/agg-1/connectors/" + c.path("id").asText())
+                .header("Authorization", staffToken())).andExpect(status().isOk());
+        } finally {
+            connectorRepo.deleteAll();
+        }
+    }
+
+    @Test
+    void rateFilesCarryTheBrokersPriceRulesAndAvailabilityPushUsesOAuthAndItsFieldNames() throws Exception {
+        var calls = fakeBroker(x -> x.url().endsWith("/token")
+            ? new OutboundConnectorService.Reply(200, "{\"access_token\":\"tok-abc\",\"expires_in\":3600}")
+            : new OutboundConnectorService.Reply(202, "accepted"));
+        try {
+            rules((agg, r) -> r.putObject("commercial").put("markupPercent", 10));
+            connector("{\"type\":\"RATE_FILE\",\"url\":\"https://files.broker.example/rates\",\"format\":\"CSV\",\"method\":\"PUT\",\"authType\":\"BASIC\",\"authUser\":\"urd\",\"secret\":\"pw\",\"dailyHour\":-1}");
+            connector("{\"type\":\"ARI_PUSH\",\"url\":\"https://ari.broker.example/availability\",\"authType\":\"OAUTH2\",\"authUser\":\"client-1\",\"secret\":\"s3cret\","
+                + "\"tokenUrl\":\"https://auth.broker.example/token\",\"scope\":\"ari:write\",\"days\":14,\"dailyHour\":-1,\"fieldMap\":{\"vehicle_group\":\"sipp\",\"available\":\"qty\"}}");
+            connectorsSvc.tick();
+            Sent rates = calls.stream().filter(x -> x.url().contains("/rates")).findFirst().orElseThrow();
+            assertEquals("PUT", rates.method());
+            assertTrue(rates.headers().get("Authorization").startsWith("Basic "));
+            assertTrue(rates.body().startsWith("season,from,to,vehicle_group,min_days,max_days,daily_amount,currency"), rates.body());
+            assertTrue(rates.body().contains(",SDAR,4,,44.00,") && rates.body().contains(",SDAR,1,3,55.00,"), "published 40 and 50 + 10 %: " + rates.body());
+            Sent ari = calls.stream().filter(x -> x.url().contains("/availability")).findFirst().orElseThrow();
+            assertEquals("Bearer tok-abc", ari.headers().get("Authorization"));
+            assertTrue(ari.body().contains("\"sipp\"") && ari.body().contains("\"qty\"") && !ari.body().contains("\"vehicle_group\""), ari.body());
+            Sent token = calls.stream().filter(x -> x.url().endsWith("/token")).findFirst().orElseThrow();
+            assertTrue(token.body().contains("grant_type=client_credentials") && token.body().contains("scope=ari%3Awrite"), token.body());
+            int before = calls.size();
+            connectorsSvc.tick();
+            assertEquals(before, calls.size(), "nothing changed and nothing republished: nothing is sent again");
+            assertEquals(1, calls.stream().filter(x -> x.url().endsWith("/token")).count(), "the OAuth token is reused");
+        } finally {
+            connectorRepo.deleteAll();
+            rules((agg, r) -> r.remove("commercial"));
+        }
+    }
+
+    @Test
+    void connectorsRetryRefuseUnsafeAddressesAndNeedStaff() throws Exception {
+        fakeBroker(x -> new OutboundConnectorService.Reply(503, "busy"));
+        try {
+            JsonNode c = connector("{\"type\":\"RES_NOTIFY\",\"url\":\"https://api.broker.example/n\",\"format\":\"XML\"}");
+            OutboundConnector oc = connectorRepo.findAll().get(0);
+            ConnectorSend s = connectorsSvc.enqueue(oc, "reservation.created", "RSV-T-1", "application/xml", "<x/>");
+            connectorsSvc.deliverDue();
+            ConnectorSend after = connectorSends.findById(s.getId()).orElseThrow();
+            assertEquals(ConnectorSend.Status.PENDING, after.getStatus());
+            assertEquals(1, after.getAttempts());
+            assertEquals(503, after.getLastHttpStatus());
+            assertTrue(after.getNextAttemptAt().isAfter(java.time.Instant.now().plusSeconds(30)), "retried in about a minute");
+            var test = M.readTree(mvc.perform(post("/api/channels/agg-1/connectors/" + c.path("id").asText() + "/test").header("Authorization", staffToken()))
+                .andReturn().getResponse().getContentAsString());
+            assertFalse(test.path("ok").asBoolean());
+            assertEquals(503, test.path("httpStatus").asInt());
+            for (String bad : List.of("{\"type\":\"RES_NOTIFY\",\"url\":\"http://api.broker.example/n\"}", "{\"type\":\"RES_NOTIFY\",\"url\":\"https://10.0.0.8/n\"}",
+                    "{\"type\":\"ARI_PUSH\",\"url\":\"https://a.example/x\",\"format\":\"XML\"}", "{\"type\":\"RES_NOTIFY\",\"url\":\"https://a.example/x\",\"authType\":\"HEADER\",\"secret\":\"k\"}",
+                    "{\"type\":\"RES_NOTIFY\",\"url\":\"https://a.example/x\",\"authType\":\"BEARER\"}", "{\"type\":\"FTP\",\"url\":\"https://a.example/x\"}")) {
+                assertEquals(400, mvc.perform(post("/api/channels/agg-1/connectors").header("Authorization", staffToken()).contentType(MediaType.APPLICATION_JSON).content(bad))
+                    .andReturn().getResponse().getStatus(), bad);
+            }
+            assertTrue(mvc.perform(get("/api/channels/agg-1/connectors")).andReturn().getResponse().getStatus() >= 401);
+        } finally {
+            connectorSends.deleteAll();
+            connectorRepo.deleteAll();
+        }
     }
 
     // ======================================================================= phase 9: attacks and load

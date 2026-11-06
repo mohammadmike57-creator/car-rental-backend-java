@@ -314,6 +314,11 @@ public final class OtaXml {
 
     /** Full published rate sheet (seasons × SIPP × length of rental) with extras, stop sales and terms. */
     public static String rateSheet(ChannelSnapshot ch) {
+        return rateSheet(ch, (group, daily) -> daily);
+    }
+
+    /** The rate sheet with every daily amount passed through `daily` (group, published amount) - used for broker terms. */
+    public static String rateSheet(ChannelSnapshot ch, java.util.function.BiFunction<String, BigDecimal, BigDecimal> daily) {
         StringBuilder x = new StringBuilder();
         int version = ch.publishedVersion();
         x.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
@@ -343,7 +348,7 @@ public final class OtaXml {
                         x.append("        <Rate").append(attrs("MinDays", t.path("fromDay").asInt(1),
                             "MaxDays", open ? null : t.get("toDay").asInt(),
                             "OpenEnded", open ? "true" : null,
-                            "DailyAmount", money(t.path("dailyPrice").asDouble(0)).toPlainString())).append("/>\n");
+                            "DailyAmount", daily.apply(code, money(t.path("dailyPrice").asDouble(0))).toPlainString())).append("/>\n");
                     }
                     x.append("      </VehicleGroup>\n");
                 }
