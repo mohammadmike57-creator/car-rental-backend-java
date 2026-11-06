@@ -43,6 +43,8 @@ class ChannelGatewayIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired StateService stateService;
     @Autowired ChannelBookingRepository bookings;
+    @Autowired WebhookV2Service webhooksV2;
+    @Autowired WebhookSubscriptionRepository subscriptions;
     @Autowired ChannelOfferRepository offers;
     @Autowired ChannelWebhookRepository webhooks;
     @Autowired UserRepository users;
@@ -798,7 +800,7 @@ class ChannelGatewayIntegrationTest {
         send("/ota/v1/BKG/OTA_VehCancel", cancel);
         send("/ota/v1/BKG/OTA_VehCancel", cancel);
         assertEquals(3, bookings.findByReservationNumber(number).orElseThrow().currentVersion(), "created 1, modified 2, cancelled 3; cancelling again changes nothing");
-        List<Integer> versions = webhooks.findAll().stream().filter(d -> number.equals(d.getReservationNumber()))
+        List<Integer> versions = webhooks.findAll().stream().filter(d -> number.equals(d.getReservationNumber()) && d.getSubscriptionId() == null)
             .map(d -> { try { return M.readTree(d.getPayload()).path("reservation_version").asInt(); } catch (Exception e) { return -1; } }).toList();
         assertEquals(List.of(1, 1, 2, 3), versions, "every update carries the booking version");
     }
@@ -1077,6 +1079,74 @@ class ChannelGatewayIntegrationTest {
             .content("{\"quoteId\": \"" + quoteId + "\", \"brokerReference\": \"SBX-V3\", \"customer\": {\"firstName\": \"T\", \"lastName\": \"Test\"}}")
             .header("Authorization", tok).header("Idempotency-Key", "sbx-1")).andExpect(status().isCreated());
         assertEquals(0, reservations().path(Y).path("May").size(), "a sandbox booking never reaches the reservations list");
+    }
+
+    @Test
+    void webhooksV2SignRetryFor72HoursDeadLetterAndKeepEnvironmentsApart() throws Exception {
+        String tok = accessToken(oauthClient("production"), null);
+        // Only public HTTPS endpoints.
+        mvc.perform(post("/api/v3/webhooks/subscriptions").contentType(MediaType.APPLICATION_JSON).content("{\"url\": \"https://localhost/hook\"}")
+            .header("Authorization", tok)).andExpect(status().isBadRequest());
+        JsonNode sub = M.readTree(mvc.perform(post("/api/v3/webhooks/subscriptions").contentType(MediaType.APPLICATION_JSON)
+            .content("{\"url\": \"https://hooks.example.com/urdrive\", \"events\": [\"reservation.confirmed\", \"reservation.cancelled\"]}")
+            .header("Authorization", tok)).andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).path("data");
+        String subId = sub.path("subscriptionId").asText(), secret = sub.path("secret").asText();
+        assertTrue(subId.startsWith("whsub_") && secret.startsWith("whsec_"));
+        WebhookSubscription stored = subscriptions.findByPublicId(subId).orElseThrow();
+        assertFalse(stored.getSecretEnc().contains(secret), "secret stored encrypted");
+        // A booking queues a signed v2 event with the v3 envelope.
+        String search = """
+            {"pickupLocation": "AMM", "pickupAt": "%s-05-01T10:00", "returnAt": "%s-05-06T10:00"}""".formatted(Y, Y);
+        String quoteId = M.readTree(mvc.perform(post("/api/v3/availability/search").contentType(MediaType.APPLICATION_JSON).content(search)
+            .header("Authorization", tok)).andReturn().getResponse().getContentAsString()).path("data").path("offers").get(0).path("quoteId").asText();
+        String rsv = M.readTree(mvc.perform(post("/api/v3/reservations").contentType(MediaType.APPLICATION_JSON)
+            .content("{\"quoteId\": \"" + quoteId + "\", \"brokerReference\": \"WH-1\", \"customer\": {\"firstName\": \"A\", \"lastName\": \"B\"}}")
+            .header("Authorization", tok).header("Idempotency-Key", "wh-1")).andExpect(status().isCreated()).andReturn().getResponse().getContentAsString())
+            .path("data").path("reservationId").asText();
+        java.util.List<ChannelWebhookDelivery> mine = webhooks.findAll().stream().filter(d -> stored.getId().equals(d.getSubscriptionId())).toList();
+        assertEquals(1, mine.size(), "only the subscribed event (confirmed) was queued");
+        ChannelWebhookDelivery d = mine.get(0);
+        JsonNode payload = M.readTree(d.getPayload());
+        assertEquals("reservation.confirmed", payload.path("type").asText());
+        assertEquals(rsv, payload.path("subject").path("reservationId").asText());
+        assertEquals("production", payload.path("environment").asText());
+        assertEquals("3.0.0", payload.path("apiVersion").asText());
+        // Signature: v1=HMAC(secret, id.timestamp.nonce.body); during a rotation both secrets sign.
+        String header = webhooksV2.signatureHeader(stored, d.getEventId(), 1700000000L, "n1", d.getPayload());
+        assertEquals("v1=" + WebhookV2Service.hmac(secret, d.getEventId() + ".1700000000.n1." + d.getPayload()), header);
+        JsonNode rotated = M.readTree(mvc.perform(post("/api/v3/webhooks/subscriptions/" + subId + "/rotate-secret").header("Authorization", tok))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data");
+        String two = webhooksV2.signatureHeader(subscriptions.findByPublicId(subId).orElseThrow(), "evt_x", 1L, "n", "{}");
+        assertEquals("v1=" + WebhookV2Service.hmac(rotated.path("secret").asText(), "evt_x.1.n.{}") + ",v1=" + WebhookV2Service.hmac(secret, "evt_x.1.n.{}"), two);
+        // A failed attempt is retried after about a minute; the schedule ends after 72 hours (dead letter).
+        ChannelWebhookDelivery after = webhooksV2.attempt(d);
+        assertEquals(ChannelWebhookDelivery.Status.PENDING, after.getStatus());
+        long wait = java.time.Duration.between(java.time.Instant.now(), after.getNextAttemptAt()).getSeconds();
+        assertTrue(wait > 30 && wait < 90, "first retry ~1 min, got " + wait);
+        java.time.Instant created = java.time.Instant.now().minus(java.time.Duration.ofHours(71));
+        assertNull(WebhookV2Service.nextAttempt(created, 9, java.time.Instant.now()), "past 72 h: dead letter");
+        assertNotNull(WebhookV2Service.nextAttempt(java.time.Instant.now(), 3, java.time.Instant.now()));
+        // Pausing holds deliveries; a later event of the same reservation waits for the earlier one.
+        mvc.perform(patch("/api/v3/webhooks/subscriptions/" + subId).contentType(MediaType.APPLICATION_JSON).content("{\"status\": \"paused\"}")
+            .header("Authorization", tok)).andExpect(status().isOk());
+        assertFalse(webhooksV2.mayDeliverNow(after));
+        mvc.perform(patch("/api/v3/webhooks/subscriptions/" + subId).contentType(MediaType.APPLICATION_JSON).content("{\"status\": \"active\"}")
+            .header("Authorization", tok)).andExpect(status().isOk());
+        mvc.perform(post("/api/v3/reservations/" + rsv + "/cancellations").header("Authorization", tok).header("Idempotency-Key", "wh-c1")).andExpect(status().isOk());
+        ChannelWebhookDelivery cancelled = webhooks.findAll().stream().filter(x -> stored.getId().equals(x.getSubscriptionId())
+            && "reservation.cancelled".equals(x.getEventType())).findFirst().orElseThrow();
+        assertFalse(webhooksV2.mayDeliverNow(cancelled), "waits for the pending confirmed event");
+        // The broker sees its deliveries and can replay one.
+        JsonNode log = M.readTree(mvc.perform(get("/api/v3/webhooks/deliveries").header("Authorization", tok)).andReturn().getResponse().getContentAsString());
+        assertEquals(2, log.path("data").path("deliveries").size());
+        mvc.perform(post("/api/v3/webhooks/deliveries/" + d.getEventId() + "/replay").header("Authorization", tok)).andExpect(status().isOk());
+        // A sandbox client sees none of the production subscriptions.
+        String sbx = accessToken(oauthClient("sandbox"), null);
+        assertEquals(0, M.readTree(mvc.perform(get("/api/v3/webhooks/subscriptions").header("Authorization", sbx)).andReturn().getResponse()
+            .getContentAsString()).path("data").path("subscriptions").size());
+        mvc.perform(post("/api/v3/webhooks/deliveries/" + d.getEventId() + "/replay").header("Authorization", sbx)).andExpect(status().isNotFound());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/v3/webhooks/subscriptions/" + subId)
+            .header("Authorization", tok)).andExpect(status().isOk());
     }
 
     @Test

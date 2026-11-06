@@ -38,8 +38,15 @@ public class ApiV3Controller {
     private final ChannelGateway gateway;
     private final ChannelBookingService core;
     private final OAuthService oauth;
+    private final WebhookV2Service webhooks;
+    private final ChannelWebhookRepository deliveries;
+    private final ChannelStateReader channels;
 
-    public ApiV3Controller(ChannelGateway gateway, ChannelBookingService core, OAuthService oauth) {
+    public ApiV3Controller(ChannelGateway gateway, ChannelBookingService core, OAuthService oauth, WebhookV2Service webhooks,
+                           ChannelWebhookRepository deliveries, ChannelStateReader channels) {
+        this.webhooks = webhooks;
+        this.deliveries = deliveries;
+        this.channels = channels;
         this.gateway = gateway;
         this.core = core;
         this.oauth = oauth;
@@ -199,6 +206,144 @@ public class ApiV3Controller {
     public ResponseEntity<String> inventory(@RequestParam(required = false) Integer days, HttpServletRequest http) {
         return run(http, "inventory:read", "v3 inventory", null, HttpStatus.OK,
             c -> core.inventory(c.ctx(), days == null ? c.ctx().rules().inventoryPushDays() : Math.max(1, Math.min(365, days))));
+    }
+
+    // ------------------------------------------------------------------ webhooks v2
+
+    @GetMapping("/webhooks/subscriptions")
+    public ResponseEntity<String> subscriptions(HttpServletRequest http) {
+        return manage(http, HttpStatus.OK, p -> {
+            ArrayNode list = JSON.createArrayNode();
+            for (WebhookSubscription s : webhooks.list(p.channelId(), p.sandbox())) list.add(subscriptionView(s));
+            return JSON.createObjectNode().set("subscriptions", list);
+        });
+    }
+
+    @PostMapping(value = "/webhooks/subscriptions", consumes = MediaType.ALL_VALUE)
+    public ResponseEntity<String> subscribe(@RequestBody(required = false) String body, HttpServletRequest http) {
+        return manage(http, HttpStatus.CREATED, p -> {
+            JsonNode b = PartnerRestController.read(body);
+            WebhookV2Service.Created made = webhooks.create(p.channelId(), p.sandbox(), b.path("url").asText(null), events(b), p.clientId());
+            ObjectNode n = subscriptionView(made.subscription());
+            n.put("secret", made.secret());
+            return n;
+        });
+    }
+
+    @PatchMapping(value = "/webhooks/subscriptions/{subscriptionId}", consumes = MediaType.ALL_VALUE)
+    public ResponseEntity<String> updateSubscription(@PathVariable String subscriptionId, @RequestBody(required = false) String body, HttpServletRequest http) {
+        return manage(http, HttpStatus.OK, p -> {
+            JsonNode b = PartnerRestController.read(body);
+            WebhookSubscription s = subscription(p, subscriptionId);
+            return subscriptionView(webhooks.update(s, b.hasNonNull("url") ? b.path("url").asText() : null, b.has("events") ? events(b) : null,
+                b.hasNonNull("status") ? b.path("status").asText() : null));
+        });
+    }
+
+    @DeleteMapping("/webhooks/subscriptions/{subscriptionId}")
+    public ResponseEntity<String> unsubscribe(@PathVariable String subscriptionId, HttpServletRequest http) {
+        return manage(http, HttpStatus.OK, p -> {
+            webhooks.delete(subscription(p, subscriptionId));
+            return JSON.createObjectNode().put("deleted", subscriptionId);
+        });
+    }
+
+    @PostMapping("/webhooks/subscriptions/{subscriptionId}/rotate-secret")
+    public ResponseEntity<String> rotate(@PathVariable String subscriptionId, HttpServletRequest http) {
+        return manage(http, HttpStatus.OK, p -> {
+            WebhookSubscription s = subscription(p, subscriptionId);
+            String secret = webhooks.rotate(s);
+            return subscriptionView(s).put("secret", secret).put("previousSecretValidUntil", s.getPreviousSecretUntil().toString());
+        });
+    }
+
+    /** Sends a webhook.test event now and returns the delivery result. */
+    @PostMapping("/webhooks/subscriptions/{subscriptionId}/test")
+    public ResponseEntity<String> testDelivery(@PathVariable String subscriptionId, HttpServletRequest http) {
+        return manage(http, HttpStatus.OK, p -> {
+            WebhookSubscription s = subscription(p, subscriptionId);
+            String code = channels.find(p.channelId()).map(ChannelSnapshot::channelCode).orElse(p.channelId());
+            ChannelWebhookDelivery d = webhooks.queue(s, code, "webhook.test", null, null, null, JSON.createObjectNode().put("message", "Test event from UR-Drive"));
+            return deliveryView(webhooks.attempt(d));
+        });
+    }
+
+    @GetMapping("/webhooks/deliveries")
+    public ResponseEntity<String> deliveryLog(@RequestParam(defaultValue = "50") int limit, @RequestParam(required = false) String status, HttpServletRequest http) {
+        return manage(http, HttpStatus.OK, p -> {
+            List<Long> ids = webhooks.list(p.channelId(), p.sandbox()).stream().map(WebhookSubscription::getId).toList();
+            ArrayNode list = JSON.createArrayNode();
+            if (!ids.isEmpty()) for (ChannelWebhookDelivery d : deliveries.findBySubscriptionIdInOrderByCreatedAtDesc(ids,
+                    org.springframework.data.domain.PageRequest.of(0, Math.max(1, Math.min(200, limit))))) {
+                if (status == null || status.equalsIgnoreCase(d.getStatus().name()) || ("dead_letter".equalsIgnoreCase(status) && d.getStatus() == ChannelWebhookDelivery.Status.FAILED)) {
+                    list.add(deliveryView(d));
+                }
+            }
+            return JSON.createObjectNode().set("deliveries", list);
+        });
+    }
+
+    @PostMapping("/webhooks/deliveries/{deliveryId}/replay")
+    public ResponseEntity<String> replay(@PathVariable String deliveryId, HttpServletRequest http) {
+        return manage(http, HttpStatus.OK, p -> {
+            Set<Long> ids = new HashSet<>(webhooks.list(p.channelId(), p.sandbox()).stream().map(WebhookSubscription::getId).toList());
+            ChannelWebhookDelivery d = deliveries.findAll().stream().filter(x -> x.getEventId().equals(deliveryId) && ids.contains(x.getSubscriptionId()))
+                .findFirst().orElseThrow(() -> ChannelError.RESERVATION_NOT_FOUND.ex("No delivery " + deliveryId));
+            return deliveryView(webhooks.replay(d));
+        });
+    }
+
+    private WebhookSubscription subscription(OAuthService.Principal p, String id) {
+        return webhooks.find(p.channelId(), p.sandbox(), id).orElseThrow(() -> ChannelError.RESERVATION_NOT_FOUND.ex("No subscription " + id));
+    }
+
+    private static List<String> events(JsonNode b) {
+        List<String> out = new ArrayList<>();
+        for (JsonNode e : b.path("events")) out.add(e.asText());
+        return out;
+    }
+
+    private static ObjectNode subscriptionView(WebhookSubscription s) {
+        ObjectNode n = JSON.createObjectNode();
+        n.put("subscriptionId", s.getPublicId());
+        n.put("url", s.getUrl());
+        n.set("events", JSON.valueToTree(Arrays.asList(s.getEvents().split(" "))));
+        n.put("status", s.getStatus().name());
+        n.put("environment", s.getEnvironment());
+        n.put("createdAt", s.getCreatedAt().toString());
+        return n;
+    }
+
+    private static ObjectNode deliveryView(ChannelWebhookDelivery d) {
+        ObjectNode n = JSON.createObjectNode();
+        n.put("deliveryId", d.getEventId());
+        n.put("event", d.getEventType());
+        n.put("status", d.getStatus() == ChannelWebhookDelivery.Status.FAILED ? "DEAD_LETTER" : d.getStatus().name());
+        n.put("attempts", d.getAttempts());
+        if (d.getLastHttpStatus() != null) n.put("lastHttpStatus", d.getLastHttpStatus());
+        if (d.getLastError() != null) n.put("lastError", d.getLastError());
+        if (d.getNextAttemptAt() != null) n.put("nextAttemptAt", d.getNextAttemptAt().toString());
+        if (d.getReservationNumber() != null) n.put("reservationId", d.getReservationNumber());
+        n.put("createdAt", d.getCreatedAt().toString());
+        return n;
+    }
+
+    /** Webhook management: token + webhooks:manage scope, no booking gateway involved. */
+    private ResponseEntity<String> manage(HttpServletRequest http, HttpStatus ok, Function<OAuthService.Principal, JsonNode> action) {
+        String auth = http.getHeader("Authorization");
+        Optional<OAuthService.Principal> p = oauth.verify(auth != null && auth.regionMatches(true, 0, "Bearer ", 0, 7) ? auth.substring(7).trim() : null);
+        String rid = rid(http);
+        if (p.isEmpty()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).contentType(MediaType.APPLICATION_JSON)
+            .header("WWW-Authenticate", "Bearer realm=\"urdrive\", error=\"invalid_token\"")
+            .body(write(errorBody(rid, http, "AUTH_FAILED", "A valid OAuth 2.0 access token is required (POST /oauth/token)", "497", false)));
+        if (!p.get().scopes().contains("webhooks:manage")) return ResponseEntity.status(HttpStatus.FORBIDDEN).contentType(MediaType.APPLICATION_JSON)
+            .body(write(errorBody(rid, http, "PERMISSION_DENIED", "This token does not have the scope webhooks:manage", "448", false)));
+        try {
+            return ResponseEntity.status(ok).contentType(MediaType.APPLICATION_JSON)
+                .body(write(envelope("success", rid, http, action.apply(p.get())).put("environment", p.get().sandbox() ? "sandbox" : "production")));
+        } catch (ChannelException e) {
+            return ResponseEntity.status(e.error.http).contentType(MediaType.APPLICATION_JSON).body(write(errorBody(rid, http, e)));
+        }
     }
 
     // ------------------------------------------------------------------ plumbing

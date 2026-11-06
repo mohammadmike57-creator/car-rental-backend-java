@@ -54,9 +54,12 @@ public class ChannelWebhookService {
     private final ChannelBookingService core;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER).build();
     private ScheduledExecutorService worker;
+    private final WebhookV2Service v2;
 
     public ChannelWebhookService(ChannelWebhookRepository deliveries, ChannelSecretRepository secrets, ChannelBookingRepository bookings,
-                                 ChannelStateReader channels, ChannelOfferRepository offers, @Lazy ChannelBookingService core) {
+                                 ChannelStateReader channels, ChannelOfferRepository offers, @Lazy ChannelBookingService core,
+                                 WebhookV2Service v2) {
+        this.v2 = v2;
         this.deliveries = deliveries;
         this.secrets = secrets;
         this.bookings = bookings;
@@ -89,6 +92,12 @@ public class ChannelWebhookService {
 
     /** Queues an event for the channel's webhook, if it has one and subscribes to this event. */
     public void emit(ChannelBookingService.Ctx c, String event, Reservation r) {
+        // Webhooks v2 (REST/JSON v3 subscriptions), next to the channel's own webhook below.
+        try {
+            v2.fanOut(c.channel().id(), c.code(), c.sandbox(), event, r.reservationId(), r.brokerReference(), r.version(), ApiV3Controller.JSON.valueToTree(r));
+        } catch (Exception e) {
+            log.warn("Webhooks v2: could not queue {}: {}", event, e.getMessage());
+        }
         if (c.rules().webhookUrl().isBlank() || !c.rules().wantsEvent(event)) return;
         ObjectNode body = ChannelBookingService.JSON.createObjectNode();
         String eventId = "evt_" + UUID.randomUUID().toString().replace("-", "");
@@ -118,7 +127,13 @@ public class ChannelWebhookService {
 
     /** Queues a non-reservation event (inventory.updated) with its own data. */
     public boolean emitData(ChannelBookingService.Ctx c, String event, JsonNode data) {
-        if (c.rules().webhookUrl().isBlank() || !c.rules().wantsEvent(event)) return false;
+        int v2Queued = 0;
+        try {
+            v2Queued = v2.fanOut(c.channel().id(), c.code(), c.sandbox(), event, null, null, null, data);
+        } catch (Exception e) {
+            log.warn("Webhooks v2: could not queue {}: {}", event, e.getMessage());
+        }
+        if (c.rules().webhookUrl().isBlank() || !c.rules().wantsEvent(event)) return v2Queued > 0;
         ObjectNode body = ChannelBookingService.JSON.createObjectNode();
         String eventId = "evt_" + UUID.randomUUID().toString().replace("-", "");
         body.put("event_id", eventId);
@@ -185,11 +200,18 @@ public class ChannelWebhookService {
         Set<String> down = new HashSet<>();
         for (ChannelWebhookDelivery d : deliveries.findTop50ByStatusAndNextAttemptAtBeforeOrderByNextAttemptAtAsc(ChannelWebhookDelivery.Status.PENDING, Instant.now())) {
             if (down.contains(d.getUrl())) continue;
+            if (d.getSubscriptionId() != null && !v2.mayDeliverNow(d)) {
+                // Paused, or waiting for an earlier event of the same reservation: look again shortly, no attempt used.
+                d.setNextAttemptAt(Instant.now().plusSeconds(60));
+                deliveries.save(d);
+                continue;
+            }
             if (attempt(d).getStatus() != ChannelWebhookDelivery.Status.DELIVERED) down.add(d.getUrl());
         }
     }
 
     public ChannelWebhookDelivery attempt(ChannelWebhookDelivery d) {
+        if (d.getSubscriptionId() != null) return v2.attempt(d);
         d.setAttempts(d.getAttempts() + 1);
         try {
             URI target = OutboundUrlGuard.check(d.getUrl());   // public HTTPS only (no SSRF)
@@ -231,6 +253,7 @@ public class ChannelWebhookService {
     public ChannelWebhookDelivery replay(String channelId, long id) {
         ChannelWebhookDelivery d = deliveries.findById(id).filter(x -> x.getChannelId().equals(channelId))
             .orElseThrow(() -> new NoSuchElementException("Delivery not found"));
+        if (d.getSubscriptionId() != null) return v2.replay(d);
         d.setStatus(ChannelWebhookDelivery.Status.PENDING);
         d.setCreatedAt(Instant.now());
         return attempt(d);

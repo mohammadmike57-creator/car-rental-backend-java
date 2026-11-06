@@ -30,4 +30,8 @@ public class ChannelWebhookDelivery {
     @Column(length = 500) private String lastError;
     @Column(nullable = false) private Instant createdAt;
     private Instant deliveredAt;
+    /** Set for v3 subscriptions (webhooks v2); null for the channel's own webhook (v1, unchanged). */
+    private Long subscriptionId;
+    /** Order of events for one reservation (its version); v2 delivers them in this order. */
+    private Integer sequence;
 }
