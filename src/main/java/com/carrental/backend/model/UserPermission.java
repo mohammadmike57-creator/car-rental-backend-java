@@ -37,6 +37,7 @@ public enum UserPermission {
 
     // Reports
     VIEW_REPORTS_YEARLY_SUMMARY,
+    ACTION_REPORTS_VIEW_REVENUE_BREAKDOWN,   // Yearly Summary: rental / add-ons / tickets / damages per month
     VIEW_REPORTS_SOURCE_PERFORMANCE,
     VIEW_REPORTS_INVOICE_GENERATION,
 
