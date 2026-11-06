@@ -903,6 +903,65 @@ class ChannelGatewayIntegrationTest {
     }
 
     @Test
+    void ota2024AAnd2018AAddressesServeTheSameCoreStrictly() throws Exception {
+        // Same search through v1 and 2024A: same offers.
+        String v1 = send("/ota/v1/BKG/OTA_VehAvailRate", avail("V1"));
+        var res = mvc.perform(post("/ota/2024A/BKG/OTA_VehAvailRate").contentType(MediaType.APPLICATION_XML).content(avail("V24"))
+                .header("X-Api-Key", KEY)).andReturn().getResponse();
+        assertEquals(200, res.getStatus(), res.getContentAsString());
+        assertEquals("2024A", res.getHeader("X-OTA-Release"));
+        assertEquals("ota-2024A-1.0", res.getHeader("X-API-Version"));
+        String v24 = res.getContentAsString();
+        assertTrue(v24.contains("<Success/>") && v24.contains("Code=\"SDAR\""), v24);
+        assertEquals(v1.split("RateTotalAmount").length, v24.split("RateTotalAmount").length, "same offers");
+        // The offer (quote token) books through 2024A, and the broker reference prevents a duplicate.
+        String booked = send("/ota/2024A/BKG/OTA_VehRes", vehRes(firstOffer(v24), "V24-1"));
+        assertTrue(booked.contains("<ReservationStatus>CONFIRMED</ReservationStatus>"), booked);
+        String again = send("/ota/2024A/BKG/OTA_VehRes", vehRes(firstOffer(v24), "V24-1"));
+        assertEquals(booked.substring(booked.indexOf("ConfID")).split("\"")[2], again.substring(again.indexOf("ConfID")).split("\"")[2], "same booking returned");
+        // 2018A works the same way.
+        var r18 = mvc.perform(post("/ota/2018A/BKG/OTA_Ping").contentType(MediaType.APPLICATION_XML)
+                .content("<OTA_PingRQ xmlns=\"http://www.opentravel.org/OTA/2003/05\"><EchoData>e</EchoData></OTA_PingRQ>")
+                .header("X-Api-Key", KEY)).andReturn().getResponse();
+        assertEquals(200, r18.getStatus());
+        assertEquals("ota-2018A-1.0", r18.getHeader("X-API-Version"));
+    }
+
+    @Test
+    void releaseAddressesRejectMessagesThatDoNotMatchTheSchema() throws Exception {
+        var noNs = mvc.perform(post("/ota/2024A/BKG/OTA_Ping").contentType(MediaType.APPLICATION_XML)
+                .content("<OTA_PingRQ><EchoData>e</EchoData></OTA_PingRQ>").header("X-Api-Key", KEY)).andReturn().getResponse();
+        assertEquals(400, noNs.getStatus());
+        assertTrue(noNs.getContentAsString().contains("Code=\"321\"") && noNs.getContentAsString().contains("namespace"), noNs.getContentAsString());
+        var wrongRoot = mvc.perform(post("/ota/2024A/BKG/OTA_VehRes").contentType(MediaType.APPLICATION_XML)
+                .content(avail("X")).header("X-Api-Key", KEY)).andReturn().getResponse();
+        assertEquals(400, wrongRoot.getStatus());
+        assertTrue(wrongRoot.getContentAsString().contains("root element must be OTA_VehResRQ"));
+        var xxe = mvc.perform(post("/ota/2024A/BKG/OTA_Ping").contentType(MediaType.APPLICATION_XML)
+                .content("<?xml version=\"1.0\"?><!DOCTYPE x [<!ENTITY e SYSTEM \"file:///etc/passwd\">]><OTA_PingRQ xmlns=\"http://www.opentravel.org/OTA/2003/05\"><EchoData>&e;</EchoData></OTA_PingRQ>")
+                .header("X-Api-Key", KEY)).andReturn().getResponse();
+        assertEquals(400, xxe.getStatus());
+        assertFalse(xxe.getContentAsString().contains("root:"), "no file contents");
+        assertEquals(405, mvc.perform(get("/ota/2024A/BKG/OTA_VehAvailRate")).andReturn().getResponse().getStatus());
+        assertEquals(404, mvc.perform(post("/ota/2024A/BKG/OTA_Nothing").content("<x/>")).andReturn().getResponse().getStatus());
+        // No key: refused by the same gateway as v1.
+        var nokey = mvc.perform(post("/ota/2024A/BKG/OTA_Ping").contentType(MediaType.APPLICATION_XML)
+                .content("<OTA_PingRQ xmlns=\"http://www.opentravel.org/OTA/2003/05\"/>")).andReturn().getResponse();
+        assertTrue(nokey.getContentAsString().contains("AUTH_FAILED"), nokey.getContentAsString());
+    }
+
+    @Test
+    void versionNeutralPingRateSheetAndSoapAddresses() throws Exception {
+        assertTrue(mvc.perform(get("/ota/BKG/ping").header("X-Api-Key", KEY)).andReturn().getResponse().getContentAsString().contains("<Success/>"));
+        assertTrue(mvc.perform(get("/ota/BKG/ratesheet").header("X-Api-Key", KEY)).andReturn().getResponse().getContentAsString().contains("RateSheet"));
+        String wsdl = mvc.perform(get("/ota/BKG/soap").param("wsdl", "")).andReturn().getResponse().getContentAsString();
+        assertTrue(wsdl.contains("definitions") && wsdl.contains("/ota/BKG/soap"), wsdl.substring(0, Math.min(300, wsdl.length())));
+        String soapRs = mvc.perform(post("/ota/BKG/soap").contentType(MediaType.TEXT_XML).content(soap11("BKG", KEY,
+            "<OTA_PingRQ xmlns=\"http://www.opentravel.org/OTA/2003/05\"><EchoData>soap</EchoData></OTA_PingRQ>"))).andReturn().getResponse().getContentAsString();
+        assertTrue(soapRs.contains("<EchoData>soap</EchoData>"), soapRs);
+    }
+
+    @Test
     void publicErrorCatalogueAndPlatformHealth() throws Exception {
         String errors = mvc.perform(get("/ota/errors")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         JsonNode list = M.readTree(errors).path("errors");

@@ -30,6 +30,8 @@ public class CorrelationFilter extends OncePerRequestFilter {
 
     /** The broker-facing API families and the contract version each one answers with. */
     static String apiVersion(String path) {
+        if (path.startsWith("/ota/2018A/")) return "ota-2018A-1.0";
+        if (path.startsWith("/ota/2024A/")) return "ota-2024A-1.0";
         if (path.startsWith("/ota/")) return "ota-1.0";
         if (path.startsWith("/xml/")) return "xml-1.0";
         if (path.startsWith("/partner/")) return "partner-1.0";
