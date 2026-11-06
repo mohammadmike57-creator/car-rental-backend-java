@@ -259,6 +259,8 @@ export interface ChannelStatementRow {
 }
 export interface ChannelStatement {
   channel: string; month: string; currency: string; commissionPercent: number; rows: ChannelStatementRow[];
+  /** Set when the statement was converted for settlement (e.g. to USD). */
+  channelCurrency?: string; exchangeRate?: number;
   bookings: number; cancelled: number; noShows: number; gross: number; fees: number; commission: number; net: number;
 }
 export interface ChannelInventory {
@@ -273,6 +275,20 @@ export interface ChannelWebhookRow {
 const channelPath = (id: string, p: string) => `${API_URL}/api/channels/${encodeURIComponent(id)}${p}`;
 export const fetchChannelBookings = async (channelId: string): Promise<ChannelBookingRow[]> =>
   (await axios.get(channelPath(channelId, '/bookings'), { headers: authHeaders() })).data;
+export interface OAuthClientRow {
+  clientId: string; name?: string; environment: 'sandbox' | 'production'; scopes: string[]; status: 'ACTIVE' | 'REVOKED';
+  secretHint?: string; createdAt: string; createdBy?: string; lastUsedAt?: string; revokedAt?: string; clientSecret?: string;
+}
+export const fetchOAuthClients = async (channelId: string): Promise<{ clients: OAuthClientRow[]; scopes: string[] }> =>
+  (await axios.get(channelPath(channelId, '/oauth-clients'), { headers: authHeaders() })).data;
+export const createOAuthClient = async (channelId: string, body: { environment: string; name?: string; scopes: string[] }): Promise<OAuthClientRow> => {
+  try { return (await axios.post(channelPath(channelId, '/oauth-clients'), body, { headers: authHeaders() })).data; }
+  catch (e) { throw apiError(e, 'Could not create the OAuth client.'); }
+};
+export const revokeOAuthClient = async (channelId: string, clientId: string): Promise<void> => {
+  try { await axios.delete(channelPath(channelId, `/oauth-clients/${encodeURIComponent(clientId)}`), { headers: authHeaders() }); }
+  catch (e) { throw apiError(e, 'Could not revoke the OAuth client.'); }
+};
 /** Deletes a broker booking from our records (OTA XML and its copy in the reservations list). The broker is not told. */
 export const deleteChannelBooking = async (channelId: string, reservationNumber: string): Promise<void> => {
   try { await axios.delete(channelPath(channelId, `/bookings/${encodeURIComponent(reservationNumber)}`), { headers: authHeaders() }); }
@@ -290,8 +306,8 @@ export const sendTestWebhook = async (channelId: string): Promise<ChannelWebhook
 };
 export const replayWebhook = async (channelId: string, deliveryId: number): Promise<ChannelWebhookRow> =>
   (await axios.post(channelPath(channelId, `/webhooks/${deliveryId}/replay`), {}, { headers: authHeaders() })).data;
-export const fetchChannelStatement = async (channelId: string, month: string): Promise<ChannelStatement> => {
-  try { return (await axios.get(channelPath(channelId, '/statement'), { params: { month }, headers: authHeaders() })).data; }
+export const fetchChannelStatement = async (channelId: string, month: string, currency?: string): Promise<ChannelStatement> => {
+  try { return (await axios.get(channelPath(channelId, '/statement'), { params: { month, ...(currency ? { currency } : {}) }, headers: authHeaders() })).data; }
   catch (e) { throw apiError(e, 'Could not load the statement.'); }
 };
 export const fetchChannelInventory = async (channelId: string, days?: number): Promise<ChannelInventory> => {
@@ -555,3 +571,10 @@ export const uploadImage = async (dataUrl: string): Promise<string> => {
 /** Turns a stored media path into a full URL for <img>; other URLs (data:, https:) pass through. */
 export const mediaUrl = (path?: string): string | undefined =>
   !path ? undefined : path.startsWith('/api/') ? `${API_URL}${path}` : path;
+
+export interface RetentionPolicy {
+  trafficLogDays: number; quoteDays: number; deliveredWebhookDays: number; deadLetterDays: number; deliveryLogDays: number; sandboxBookingDays: number;
+  lastRun?: { ranAt?: string; deliveredWebhooks?: number; deadLetterWebhooks?: number; deliveryLog?: number; sandboxBookings?: number };
+}
+export const fetchRetentionPolicy = async (): Promise<RetentionPolicy> =>
+  (await axios.get(`${API_URL}/api/channel-platform/retention`, { headers: authHeaders() })).data;
