@@ -565,13 +565,27 @@ public class ChannelBookingService {
         boolean afterPick = pl != null && !pl.openAt(s.pickupAt());
         boolean afterReturn = rl != null && !rl.openAt(s.returnAt());
 
+        ChannelCommercial com = ChannelCommercial.of(c.channel().raw().path("bookingRules"));
         List<Offer> out = new ArrayList<>();
         for (OtaXml.QuoteLine l : lines) {
             if (!rules.groupAllowed(l.sippCode())) continue;
             int days = l.days();
+            BigDecimal daily = l.dailyRate(), baseTotal = l.baseTotal();
+            if (!com.neutral()) {
+                // The broker's own terms are built into the daily rate (a net rate), never shown as a separate line.
+                BigDecimal pct = com.percentFor(l.sippCode(), s.pickupAt(), rules.now());
+                if (pct.signum() != 0 || com.markupPerDay().signum() != 0 || com.roundTo() > 0) {
+                    BigDecimal adjusted = com.adjustDaily(daily, pct);
+                    BigDecimal plain = daily.multiply(BigDecimal.valueOf(days));
+                    baseTotal = baseTotal.compareTo(plain) == 0 || daily.signum() == 0
+                        ? adjusted.multiply(BigDecimal.valueOf(days)).setScale(2, RoundingMode.HALF_UP)
+                        : baseTotal.multiply(adjusted).divide(daily, 2, RoundingMode.HALF_UP);
+                    daily = adjusted;
+                }
+            }
             List<PriceLine> breakdown = new ArrayList<>();
-            breakdown.add(new PriceLine("BASE", l.sippCode(), days + " day" + (days == 1 ? "" : "s") + " × " + l.dailyRate(), l.dailyRate(), days, l.baseTotal()));
-            BigDecimal base = l.baseTotal();
+            breakdown.add(new PriceLine("BASE", l.sippCode(), days + " day" + (days == 1 ? "" : "s") + " × " + daily, daily, days, baseTotal));
+            BigDecimal base = baseTotal;
             String appliedPromo = null;
             if (promo != null && promo.appliesTo(l.sippCode(), s.pickupAt().toLocalDate()) && promo.percentOff().signum() > 0) {
                 BigDecimal off = base.multiply(promo.percentOff()).divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
@@ -622,6 +636,12 @@ public class ChannelBookingService {
             String status = l.status();
             String reason = l.closedReason();
             int available = 0;
+            if (!"Closed".equals(status) && !com.neutral()) {
+                ChannelCommercial.Blackout stop = com.blackoutFor(l.sippCode(), s.pickupAt().toLocalDate(), s.returnAt().toLocalDate());
+                int minDays = com.minDaysFor(l.sippCode());
+                if (stop != null) { status = "Closed"; reason = stop.note().isEmpty() ? "Not sold for these dates" : stop.note(); }
+                else if (days < minDays) { status = "Closed"; reason = "Minimum rental " + minDays + " days for this group"; }
+            }
             if (!"Closed".equals(status)) {
                 Avail av = check(c, l.sippCode(), s.pickupAt(), s.returnAt(), excludeOffer, excludeReservation);
                 available = av.count();
@@ -863,6 +883,10 @@ public class ChannelBookingService {
         }
         int days = OtaXml.rentalDays(s.pickupAt(), s.returnAt());
         if (days > c.rules().maxRentalDays()) throw ChannelError.INVALID_DATE.ex("The longest rental is " + c.rules().maxRentalDays() + " days");
+        ChannelCommercial com = ChannelCommercial.of(c.channel().raw().path("bookingRules"));
+        if (days < com.minRentalDays()) throw ChannelError.INVALID_DATE.ex("The shortest rental is " + com.minRentalDays() + " days");
+        if (com.closedToArrival().contains(s.pickupAt().toLocalDate())) throw ChannelError.INVALID_DATE.ex("No pick-ups on " + s.pickupAt().toLocalDate());
+        if (com.closedToDeparture().contains(s.returnAt().toLocalDate())) throw ChannelError.INVALID_DATE.ex("No returns on " + s.returnAt().toLocalDate());
         ChannelRules.Location p = c.rules().location(s.pickupLocation());
         ChannelRules.Location r = c.rules().location(s.returnLocation());
         if (p == null) throw ChannelError.INVALID_LOCATION.ex("Unknown pick-up location " + s.pickupLocation());

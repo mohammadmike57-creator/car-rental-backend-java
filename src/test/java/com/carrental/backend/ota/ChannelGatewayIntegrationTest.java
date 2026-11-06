@@ -1159,6 +1159,58 @@ class ChannelGatewayIntegrationTest {
     }
 
     @Test
+    void brokerCommercialTermsAreBuiltIntoTheNetRateAndClosedDatesAreEnforced() throws Exception {
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", avail("C0")).contains("EstimatedTotalAmount=\"225.00\""), "5 × 40 + GPS 25 without terms");
+        try {
+            rules((agg, r) -> r.putObject("commercial").put("markupPercent", 10).put("version", 1));
+            String up = send("/ota/v1/BKG/OTA_VehAvailRate", avail("C1"));
+            assertTrue(up.contains("EstimatedTotalAmount=\"245.00\"") && up.contains("UnitCharge=\"44.00\""), "10 % on the daily rate, extras unchanged: " + up);
+            assertFalse(up.contains("MARKUP") || up.contains("markup"), "the markup is never shown to the broker");
+
+            rules((agg, r) -> ((ObjectNode) r.path("commercial")).putObject("groups").putObject("SDAR").put("markupPercent", -5));
+            assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", avail("C2")).contains("EstimatedTotalAmount=\"215.00\""), "group terms win: 5 × 38 + 25");
+
+            rules((agg, r) -> ((ObjectNode) r.path("commercial")).put("minRentalDays", 7));
+            String shortRental = send("/ota/v1/BKG/OTA_VehAvailRate", avail("C3"));
+            assertTrue(shortRental.contains("The shortest rental is 7 days"), shortRental);
+
+            rules((agg, r) -> ((ObjectNode) r.path("commercial")).put("minRentalDays", 1).putArray("closedToArrival").add(Y + "-05-01"));
+            assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", avail("C4")).contains("No pick-ups on " + Y + "-05-01"));
+
+            rules((agg, r) -> {
+                ObjectNode com = (ObjectNode) r.path("commercial");
+                com.putArray("closedToArrival");
+                com.putArray("blackouts").addObject().put("from", Y + "-05-03").put("to", Y + "-05-03").put("note", "Fully booked event");
+            });
+            String stop = send("/ota/v1/BKG/OTA_VehAvailRate", avail("C5"));
+            assertFalse(stop.contains("EstimatedTotalAmount=\"215.00\""), "stop sale closes the group: " + stop);
+            String book = send("/ota/v1/BKG/OTA_VehRes", direct(Y + "-05-01T10:00:00", Y + "-05-04T10:00:00", "COM-1", "Roe"));
+            assertFalse(book.contains("<Success/>"), "a stop sale cannot be booked around: " + book);
+        } finally {
+            rules((agg, r) -> r.remove("commercial"));
+        }
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", avail("C6")).contains("EstimatedTotalAmount=\"225.00\""), "back to the published rate");
+    }
+
+    @Test
+    void commercialTermsAddUpByDayAndBookingWindow() {
+        ObjectNode r = M.createObjectNode();
+        ObjectNode com = r.putObject("commercial").put("markupPercent", 10).put("roundTo", 1);
+        com.putObject("pickupDayPercent").put("fri", 15);
+        com.putObject("earlyBooking").put("days", 60).put("percent", -8);
+        com.putObject("lastMinute").put("hours", 48).put("percent", 5);
+        ChannelCommercial c = ChannelCommercial.of(r);
+        java.time.LocalDateTime friday = java.time.LocalDateTime.of(2027, 3, 12, 10, 0);
+        assertEquals(java.time.DayOfWeek.FRIDAY, friday.getDayOfWeek());
+        assertEquals(0, new java.math.BigDecimal("25").compareTo(c.percentFor("CDAR", friday, friday.minusDays(10))), "10 + 15");
+        assertEquals(0, new java.math.BigDecimal("17").compareTo(c.percentFor("CDAR", friday, friday.minusDays(90))), "10 + 15 - 8");
+        assertEquals(0, new java.math.BigDecimal("15").compareTo(c.percentFor("CDAR", friday.plusDays(1), friday)), "10 + 5 within 48 h");
+        assertEquals("44.00", c.adjustDaily(new java.math.BigDecimal("39.90"), java.math.BigDecimal.TEN).toPlainString(), "43.89 rounded to whole units");
+        assertTrue(ChannelCommercial.of(M.createObjectNode()).neutral(), "no block = no change");
+        assertTrue(ChannelCommercial.of(M.createObjectNode().set("commercial", M.createObjectNode().put("markupPercent", 0))).neutral());
+    }
+
+    @Test
     void publicErrorCatalogueAndPlatformHealth() throws Exception {
         String errors = mvc.perform(get("/ota/errors")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         JsonNode list = M.readTree(errors).path("errors");
