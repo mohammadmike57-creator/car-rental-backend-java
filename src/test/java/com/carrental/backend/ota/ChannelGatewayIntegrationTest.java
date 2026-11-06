@@ -1022,6 +1022,7 @@ class ChannelGatewayIntegrationTest {
         JsonNode env = M.readTree(loc.getContentAsString());
         for (String f : new String[] {"status", "requestId", "correlationId", "apiVersion", "timestamp", "data"}) assertTrue(env.has(f), f);
         assertEquals("aue-1", env.path("correlationId").asText());
+        assertTrue(loc.getContentType().toLowerCase().contains("charset=utf-8"), loc.getContentType());
         assertEquals("production", env.path("environment").asText());
         assertEquals("AMM", env.path("data").path("items").get(0).path("code").asText());
         String etag = loc.getHeader("ETag");

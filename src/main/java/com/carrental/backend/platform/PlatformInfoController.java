@@ -75,7 +75,7 @@ public class PlatformInfoController {
         body.put("timestamp", Instant.now().truncatedTo(ChronoUnit.SECONDS).toString());
         body.put("timeZone", OPERATIONS.getId());
         body.put("localTime", ZonedDateTime.now(OPERATIONS).truncatedTo(ChronoUnit.SECONDS).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-        body.put("apiVersions", List.of("ota-1.0", "xml-1.0", "partner-1.0"));
+        body.put("apiVersions", List.of("ota-1.0", "ota-2018A-1.0", "ota-2024A-1.0", "xml-1.0", "partner-1.0", "3.0.0"));
         body.put("components", Map.of("database", database));
         return ResponseEntity.status(db ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE)
             .cacheControl(CacheControl.noStore()).body(body);

@@ -33,6 +33,8 @@ import java.util.function.Function;
 public class ApiV3Controller {
 
     public static final String API_VERSION = "3.0.0";
+    /** JSON with an explicit UTF-8 charset: a String body would otherwise be sent as ISO-8859-1 and break names and symbols. */
+    static final MediaType JSON_UTF8 = new MediaType("application", "json", StandardCharsets.UTF_8);
     static final ObjectMapper JSON = new ObjectMapper().registerModule(new JavaTimeModule()).disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
     private final ChannelGateway gateway;
@@ -57,7 +59,7 @@ public class ApiV3Controller {
     @GetMapping("/health")
     public ResponseEntity<String> health(HttpServletRequest http) {
         ObjectNode d = JSON.createObjectNode().put("service", "UR-Drive Distribution API").put("timeZone", "Asia/Amman");
-        return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(write(envelope("success", rid(http), http, d)));
+        return ResponseEntity.ok().contentType(JSON_UTF8).body(write(envelope("success", rid(http), http, d)));
     }
 
     /** The OpenAPI 3.1 description of this API (public). */
@@ -333,16 +335,16 @@ public class ApiV3Controller {
         String auth = http.getHeader("Authorization");
         Optional<OAuthService.Principal> p = oauth.verify(auth != null && auth.regionMatches(true, 0, "Bearer ", 0, 7) ? auth.substring(7).trim() : null);
         String rid = rid(http);
-        if (p.isEmpty()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).contentType(MediaType.APPLICATION_JSON)
+        if (p.isEmpty()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).contentType(JSON_UTF8)
             .header("WWW-Authenticate", "Bearer realm=\"urdrive\", error=\"invalid_token\"")
             .body(write(errorBody(rid, http, "AUTH_FAILED", "A valid OAuth 2.0 access token is required (POST /oauth/token)", "497", false)));
-        if (!p.get().scopes().contains("webhooks:manage")) return ResponseEntity.status(HttpStatus.FORBIDDEN).contentType(MediaType.APPLICATION_JSON)
+        if (!p.get().scopes().contains("webhooks:manage")) return ResponseEntity.status(HttpStatus.FORBIDDEN).contentType(JSON_UTF8)
             .body(write(errorBody(rid, http, "PERMISSION_DENIED", "This token does not have the scope webhooks:manage", "448", false)));
         try {
-            return ResponseEntity.status(ok).contentType(MediaType.APPLICATION_JSON)
+            return ResponseEntity.status(ok).contentType(JSON_UTF8)
                 .body(write(envelope("success", rid, http, action.apply(p.get())).put("environment", p.get().sandbox() ? "sandbox" : "production")));
         } catch (ChannelException e) {
-            return ResponseEntity.status(e.error.http).contentType(MediaType.APPLICATION_JSON).body(write(errorBody(rid, http, e)));
+            return ResponseEntity.status(e.error.http).contentType(JSON_UTF8).body(write(errorBody(rid, http, e)));
         }
     }
 
@@ -372,12 +374,12 @@ public class ApiV3Controller {
         String token = auth != null && auth.regionMatches(true, 0, "Bearer ", 0, 7) ? auth.substring(7).trim() : null;
         Optional<OAuthService.Principal> p = oauth.verify(token);
         if (p.isEmpty()) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).contentType(MediaType.APPLICATION_JSON)
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).contentType(JSON_UTF8)
                 .header("WWW-Authenticate", "Bearer realm=\"urdrive\", error=\"invalid_token\"")
                 .body(write(errorBody(rid(http), http, "AUTH_FAILED", "A valid OAuth 2.0 access token is required (POST /oauth/token)", "497", false)));
         }
         if (!p.get().scopes().contains(scope)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).contentType(MediaType.APPLICATION_JSON)
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).contentType(JSON_UTF8)
                 .header("WWW-Authenticate", "Bearer realm=\"urdrive\", error=\"insufficient_scope\", scope=\"" + scope + "\"")
                 .body(write(errorBody(rid(http), http, "PERMISSION_DENIED", "This token does not have the scope " + scope, "448", false)));
         }
@@ -385,8 +387,8 @@ public class ApiV3Controller {
         String code = gatewayCode(p.get().channelId());
         ResponseEntity<String> rs = gateway.handle(code, null, http, type, body, http.getHeader("X-Request-ID"),
             c -> new ChannelGateway.Rendered(write(envelope("success", c.requestId(), http, action.apply(c))
-                .put("environment", c.ctx().sandbox() ? "sandbox" : "production")), MediaType.APPLICATION_JSON),
-            (e, rid) -> new ChannelGateway.Rendered(write(errorBody(rid, http, e)), MediaType.APPLICATION_JSON));
+                .put("environment", c.ctx().sandbox() ? "sandbox" : "production")), JSON_UTF8),
+            (e, rid) -> new ChannelGateway.Rendered(write(errorBody(rid, http, e)), JSON_UTF8));
         if (okStatus != HttpStatus.OK && rs.getStatusCode().value() == 200) return ResponseEntity.status(okStatus).headers(rs.getHeaders()).body(rs.getBody());
         return rs;
     }
