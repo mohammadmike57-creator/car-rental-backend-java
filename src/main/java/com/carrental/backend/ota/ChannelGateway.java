@@ -42,6 +42,8 @@ public class ChannelGateway {
     private static volatile int trustedProxyHops = 1;
     /** Request attribute the staff console sets (server side only) to call a channel without its key, always in sandbox. */
     static final String CONSOLE_ATTR = "nct.channel.console";
+    /** Request attribute the v3 API sets (server side only) after verifying an OAuth access token: the channel and environment it is for. */
+    static final String OAUTH_ATTR = "urd.oauth.principal";
 
     public ChannelGateway(ChannelStateReader channels, ChannelDeliveryService deliveries, ChannelBookingService core, ChannelTrafficService traffic,
                           ChannelSecurityGuard guard, ChannelSecretRepository secrets,
@@ -78,12 +80,14 @@ public class ChannelGateway {
                 throw ChannelError.RATE_LIMIT_EXCEEDED.ex("Rate limit of " + rateLimit(ch) + " requests a minute exceeded; retry with back-off");
             }
             boolean consoleOk = console && found.isPresent() && found.get().id().equals(http.getAttribute(CONSOLE_ATTR));
+            OAuthService.Principal oauth = http.getAttribute(OAUTH_ATTR) instanceof OAuthService.Principal p
+                && found.isPresent() && found.get().id().equals(p.channelId()) ? p : null;
             java.time.Instant lock = consoleOk ? null : guard.lockedUntil(remote);
             if (lock != null) {
                 ch = found.orElse(null);
                 throw ChannelError.AUTH_FAILED.ex("Too many failed attempts from " + remote + "; try again after " + lock.truncatedTo(java.time.temporal.ChronoUnit.SECONDS) + " (UTC)");
             }
-            if (found.isEmpty() || (!consoleOk && !PartnerKeyVerifier.matches(found.get(), key))) {
+            if (found.isEmpty() || (!consoleOk && oauth == null && !PartnerKeyVerifier.matches(found.get(), key))) {
                 ch = found.orElse(null);
                 if (guard.failed(remote)) log.warn("Broker gateway: {} locked out after repeated failed authentication", remote);
                 throw ChannelError.AUTH_FAILED.ex("Invalid or missing feed key");
@@ -101,8 +105,8 @@ public class ChannelGateway {
             }
             if ("paused".equalsIgnoreCase(ch.status())) throw ChannelError.PERMISSION_DENIED.ex("Distribution to this channel is paused");
             if (!ipAllowed(ch, remote)) throw ChannelError.PERMISSION_DENIED.ex("Requests from " + remote + " are not allowed for this channel");
-            boolean testKey = !consoleOk && PartnerKeyVerifier.kind(ch, key) == PartnerKeyVerifier.KeyKind.TEST;
-            boolean sandboxHeader = console || testKey || "sandbox".equalsIgnoreCase(http.getHeader("X-Environment"));
+            boolean testKey = !consoleOk && oauth == null && PartnerKeyVerifier.kind(ch, key) == PartnerKeyVerifier.KeyKind.TEST;
+            boolean sandboxHeader = console || testKey || (oauth != null && oauth.sandbox()) || "sandbox".equalsIgnoreCase(http.getHeader("X-Environment"));
             ChannelBookingService.Ctx ctx = core.context(ch, sandboxHeader);
             sandbox = ctx.sandbox();
             Rendered ok = action.apply(new Call(ctx, rid));

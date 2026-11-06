@@ -961,6 +961,124 @@ class ChannelGatewayIntegrationTest {
         assertTrue(soapRs.contains("<EchoData>soap</EchoData>"), soapRs);
     }
 
+    /** Creates an OAuth client through the staff API and returns {clientId, secret}. */
+    String[] oauthClient(String env, String... scopes) throws Exception {
+        String body = M.writeValueAsString(M.createObjectNode().put("environment", env).put("name", "test")
+            .set("scopes", M.valueToTree(java.util.List.of(scopes))));
+        JsonNode c = M.readTree(mvc.perform(post("/api/channels/agg-1/oauth-clients").contentType(MediaType.APPLICATION_JSON).content(body)
+            .header("Authorization", staffToken())).andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        return new String[] { c.path("clientId").asText(), c.path("clientSecret").asText() };
+    }
+
+    String accessToken(String[] client, String scope) throws Exception {
+        var rq = post("/oauth/token").contentType(MediaType.APPLICATION_FORM_URLENCODED).param("grant_type", "client_credentials")
+            .header("Authorization", "Basic " + java.util.Base64.getEncoder().encodeToString((client[0] + ":" + client[1]).getBytes()));
+        if (scope != null) rq = rq.param("scope", scope);
+        JsonNode t = M.readTree(mvc.perform(rq).andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertEquals("Bearer", t.path("token_type").asText());
+        assertEquals(1800, t.path("expires_in").asInt());
+        return "Bearer " + t.path("access_token").asText();
+    }
+
+    @Test
+    void oauthClientCredentialsIssueScopedTokensAndKeepStaffAndBrokersApart() throws Exception {
+        String[] all = oauthClient("production");
+        assertTrue(all[0].startsWith("urd_live_") && all[1].length() >= 40);
+        String list = mvc.perform(get("/api/channels/agg-1/oauth-clients").header("Authorization", staffToken())).andReturn().getResponse().getContentAsString();
+        assertTrue(list.contains(all[0]) && !list.contains(all[1]), "the secret is never shown again");
+        // Wrong secret, wrong grant, scope not granted.
+        assertEquals(401, mvc.perform(post("/oauth/token").contentType(MediaType.APPLICATION_FORM_URLENCODED).param("grant_type", "client_credentials")
+            .param("client_id", all[0]).param("client_secret", "nope")).andReturn().getResponse().getStatus());
+        assertEquals(400, mvc.perform(post("/oauth/token").contentType(MediaType.APPLICATION_FORM_URLENCODED).param("grant_type", "password")
+            .param("client_id", all[0]).param("client_secret", all[1])).andReturn().getResponse().getStatus());
+        String[] narrow = oauthClient("production", "locations:read");
+        assertEquals(400, mvc.perform(post("/oauth/token").contentType(MediaType.APPLICATION_FORM_URLENCODED).param("grant_type", "client_credentials")
+            .param("client_id", narrow[0]).param("client_secret", narrow[1]).param("scope", "reservations:write")).andReturn().getResponse().getStatus());
+        // No token / a staff token on v3 -> 401; a missing scope -> 403.
+        JsonNode noTok = M.readTree(mvc.perform(get("/api/v3/locations")).andExpect(status().isUnauthorized()).andReturn().getResponse().getContentAsString());
+        assertEquals("error", noTok.path("status").asText());
+        assertEquals("AUTH_FAILED", noTok.path("error").path("code").asText());
+        assertEquals("3.0.0", noTok.path("apiVersion").asText());
+        mvc.perform(get("/api/v3/locations").header("Authorization", staffToken())).andExpect(status().isUnauthorized());
+        String narrowTok = accessToken(narrow, null);
+        mvc.perform(get("/api/v3/fleet-groups").header("Authorization", narrowTok)).andExpect(status().isForbidden());
+        // A broker token never passes as a staff login.
+        int staffWithBroker = mvc.perform(get("/api/channels/agg-1/oauth-clients").header("Authorization", narrowTok)).andReturn().getResponse().getStatus();
+        assertTrue(staffWithBroker == 401 || staffWithBroker == 403, "got " + staffWithBroker);
+        // Revoked clients' tokens stop working at once.
+        mvc.perform(get("/api/v3/locations").header("Authorization", narrowTok)).andExpect(status().isOk());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/channels/agg-1/oauth-clients/" + narrow[0])
+            .header("Authorization", staffToken())).andExpect(status().isOk());
+        mvc.perform(get("/api/v3/locations").header("Authorization", narrowTok)).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void restV3SearchQuoteBookRetrieveCancelWithEnvelopeEtagAndIdempotency() throws Exception {
+        String tok = accessToken(oauthClient("production"), null);
+        // Reference data: envelope + ETag.
+        var loc = mvc.perform(get("/api/v3/locations").header("Authorization", tok).header("X-Correlation-ID", "aue-1")).andReturn().getResponse();
+        JsonNode env = M.readTree(loc.getContentAsString());
+        for (String f : new String[] {"status", "requestId", "correlationId", "apiVersion", "timestamp", "data"}) assertTrue(env.has(f), f);
+        assertEquals("aue-1", env.path("correlationId").asText());
+        assertEquals("production", env.path("environment").asText());
+        assertEquals("AMM", env.path("data").path("items").get(0).path("code").asText());
+        String etag = loc.getHeader("ETag");
+        assertNotNull(etag);
+        mvc.perform(get("/api/v3/locations").header("Authorization", tok).header("If-None-Match", etag)).andExpect(status().isNotModified());
+        // Search (camelCase, pickUp/return objects) -> quotes.
+        String search = """
+            {"pickUp": {"location": "AMM", "local": "%s-05-01T10:00"}, "return": {"location": "AMM", "local": "%s-05-06T10:00"}, "driverAge": 35}""".formatted(Y, Y);
+        JsonNode found = M.readTree(mvc.perform(post("/api/v3/availability/search").contentType(MediaType.APPLICATION_JSON).content(search)
+            .header("Authorization", tok)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        JsonNode offer = null;
+        for (JsonNode o : found.path("data").path("offers")) if ("SDAR".equals(o.path("vehicleGroup").asText())) offer = o;
+        assertNotNull(offer, found.toString());
+        String quoteId = offer.path("quoteId").asText();
+        assertTrue(quoteId.startsWith("OFF-"));
+        mvc.perform(get("/api/v3/quotes/" + quoteId + "/rules").header("Authorization", tok)).andExpect(status().isOk());
+        // Book: Idempotency-Key required; the same key returns the same booking.
+        String book = """
+            {"quoteId": "%s", "brokerReference": "V3-1", "customer": {"firstName": "Omar", "lastName": "Haddad", "email": "omar@example.com"}}""".formatted(quoteId);
+        mvc.perform(post("/api/v3/reservations").contentType(MediaType.APPLICATION_JSON).content(book).header("Authorization", tok)).andExpect(status().isBadRequest());
+        JsonNode made = M.readTree(mvc.perform(post("/api/v3/reservations").contentType(MediaType.APPLICATION_JSON).content(book)
+            .header("Authorization", tok).header("Idempotency-Key", "v3-key-1")).andExpect(status().isCreated()).andReturn().getResponse().getContentAsString());
+        String id = made.path("data").path("reservationId").asText();
+        assertTrue(id.matches("RSV-\\d{4}-\\d{6}"), id);
+        JsonNode again = M.readTree(mvc.perform(post("/api/v3/reservations").contentType(MediaType.APPLICATION_JSON).content(book)
+            .header("Authorization", tok).header("Idempotency-Key", "v3-key-1")).andReturn().getResponse().getContentAsString());
+        assertEquals(id, again.path("data").path("reservationId").asText());
+        // Retrieve, list, cancel.
+        assertEquals("CONFIRMED", M.readTree(mvc.perform(get("/api/v3/reservations/" + id).header("Authorization", tok)).andReturn().getResponse()
+            .getContentAsString()).path("data").path("status").asText());
+        JsonNode page = M.readTree(mvc.perform(get("/api/v3/reservations").param("from", Y + "-05-01").param("to", Y + "-05-31").param("limit", "1")
+            .header("Authorization", tok)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertEquals(1, page.path("data").path("reservations").size());
+        JsonNode cancelled = M.readTree(mvc.perform(post("/api/v3/reservations/" + id + "/cancellations").contentType(MediaType.APPLICATION_JSON)
+            .content("{\"reason\": \"customer request\"}").header("Authorization", tok).header("Idempotency-Key", "v3-cancel-1"))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertEquals("CANCELLED", cancelled.path("data").path("status").asText());
+        // A v3 error keeps the envelope, with the OTA code.
+        JsonNode missing = M.readTree(mvc.perform(get("/api/v3/reservations/RSV-1999-000001").header("Authorization", tok)).andReturn().getResponse().getContentAsString());
+        assertEquals("RESERVATION_NOT_FOUND", missing.path("error").path("code").asText());
+        assertEquals("245", missing.path("error").path("otaCode").asText());
+    }
+
+    @Test
+    void sandboxOauthClientsOnlyEverReachTheSandbox() throws Exception {
+        String tok = accessToken(oauthClient("sandbox"), null);
+        JsonNode env = M.readTree(mvc.perform(get("/api/v3/locations").header("Authorization", tok)).andReturn().getResponse().getContentAsString());
+        assertEquals("sandbox", env.path("environment").asText());
+        String search = """
+            {"pickupLocation": "AMM", "pickupAt": "%s-05-01T10:00", "returnAt": "%s-05-06T10:00"}""".formatted(Y, Y);
+        JsonNode found = M.readTree(mvc.perform(post("/api/v3/availability/search").contentType(MediaType.APPLICATION_JSON).content(search)
+            .header("Authorization", tok)).andReturn().getResponse().getContentAsString());
+        String quoteId = found.path("data").path("offers").get(0).path("quoteId").asText();
+        mvc.perform(post("/api/v3/reservations").contentType(MediaType.APPLICATION_JSON)
+            .content("{\"quoteId\": \"" + quoteId + "\", \"brokerReference\": \"SBX-V3\", \"customer\": {\"firstName\": \"T\", \"lastName\": \"Test\"}}")
+            .header("Authorization", tok).header("Idempotency-Key", "sbx-1")).andExpect(status().isCreated());
+        assertEquals(0, reservations().path(Y).path("May").size(), "a sandbox booking never reaches the reservations list");
+    }
+
     @Test
     void publicErrorCatalogueAndPlatformHealth() throws Exception {
         String errors = mvc.perform(get("/ota/errors")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
@@ -976,6 +1094,9 @@ class ChannelGatewayIntegrationTest {
         assertEquals("UP", health.path("components").path("database").path("status").asText());
         assertEquals("Asia/Amman", health.path("timeZone").asText());
         assertFalse(errors.contains(KEY) || health.toString().contains(KEY), "no secrets");
+        String openapi = mvc.perform(get("/api/v3/openapi.yaml")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertTrue(openapi.startsWith("openapi: 3.1.0") && openapi.contains("tokenUrl: https://www.nctrental.com/oauth/token"));
+        assertEquals("success", M.readTree(mvc.perform(get("/api/v3/health")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("status").asText());
     }
 
     @Test

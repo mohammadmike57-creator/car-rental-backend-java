@@ -35,6 +35,7 @@ public class CorrelationFilter extends OncePerRequestFilter {
         if (path.startsWith("/ota/")) return "ota-1.0";
         if (path.startsWith("/xml/")) return "xml-1.0";
         if (path.startsWith("/partner/")) return "partner-1.0";
+        if (path.startsWith("/api/v3/") || path.equals("/oauth/token")) return "3.0.0";
         return null;
     }
 
