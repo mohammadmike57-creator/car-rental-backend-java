@@ -195,7 +195,10 @@ public class OtaBookingController {
                                        Function<ChannelGateway.Call, String> action) {
         String echo = echo(body);
         return gateway.handle(channel, key, http, type, body, http.getHeader("X-Request-ID"),
-            c -> new ChannelGateway.Rendered(action.apply(c), XML),
+            c -> {
+                OtaBookingXml.VENDOR_NAME.set(c.ctx().channel().vendorName());
+                try { return new ChannelGateway.Rendered(action.apply(c), XML); } finally { OtaBookingXml.VENDOR_NAME.remove(); }
+            },
             (e, rid) -> new ChannelGateway.Rendered(OtaBookingXml.error(errorRoot, echo, true, e, rid), XML));
     }
 

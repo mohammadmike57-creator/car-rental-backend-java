@@ -44,6 +44,8 @@ public class ChannelSnapshot {
     public String id() { return text(channel, "id", ""); }
     public String name() { return text(channel, "name", id()); }
     public String channelCode() { return text(channel, "channelCode", ""); }
+    /** The supplier name brokers see (Vendor). Channels set it explicitly; channels made before it existed keep the old name. */
+    public String vendorName() { return text(channel, "vendorName", "NCT Rental"); }
     public String vendorCode() { return text(channel, "vendorCode", "NCT").toUpperCase(Locale.ROOT); }
     public String locationCode() { return text(channel, "locationCode", "AMM").toUpperCase(Locale.ROOT); }
     public String currency() { return text(channel, "currency", "USD"); }

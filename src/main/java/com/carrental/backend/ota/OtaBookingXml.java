@@ -29,6 +29,11 @@ import java.util.List;
  */
 public final class OtaBookingXml {
 
+    /** The channel's supplier name for the response being written (set around each OTA call by OtaBookingController). */
+    static final ThreadLocal<String> VENDOR_NAME = new ThreadLocal<>();
+    static String vendorName() { String n = VENDOR_NAME.get(); return n == null || n.isBlank() ? "NCT Rental" : n; }
+
+
     private OtaBookingXml() {}
 
     static final String NS = OtaXml.OTA_NAMESPACE;
@@ -327,7 +332,7 @@ public final class OtaBookingXml {
         if (warning != null) x.line("<Warnings><Warning Type=\"3\" ShortText=\"" + OtaXml.escape(warning) + "\"/></Warnings>");
         x.open("VehAvailRSCore");
         rentalCore(x, s.pickupAt(), s.returnAt(), s.pickupLocation(), s.returnLocation());
-        x.open("VehVendorAvails").open("VehVendorAvail").el("Vendor", "NCT Rental", "Code", vendor).open("VehAvails");
+        x.open("VehVendorAvails").open("VehVendorAvail").el("Vendor", vendorName(), "Code", vendor).open("VehAvails");
         for (Offer o : offers) {
             x.open("VehAvail").open("VehAvailCore", "Status", o.status());
             vehicle(x, o.vehicleGroup(), o.modelExample(), o.transmission(), o.airCon(), o.vehicle());
@@ -388,7 +393,7 @@ public final class OtaBookingXml {
         x.open("VehSegmentCore");
         x.el("ConfID", null, "Type", 14, "ID", r.reservationId());
         if (r.brokerReference() != null) x.el("ConfID", null, "Type", 16, "ID", r.brokerReference(), "ID_Context", "BROKER");
-        x.el("Vendor", "NCT Rental", "Code", vendor);
+        x.el("Vendor", vendorName(), "Code", vendor);
         rentalCore(x, r.pickupAt(), r.returnAt(), r.pickupLocation(), r.returnLocation());
         String desc = r.vehicleDescription() == null ? r.vehicleGroup() : r.vehicleDescription().replaceFirst("^[A-Z]{4} · ", "");
         vehicle(x, r.vehicleGroup(), desc, null, OtaXml.sippAirCon(r.vehicleGroup()), r.vehicle());

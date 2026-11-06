@@ -268,7 +268,7 @@ public final class OtaXml {
         x.append("      <ReturnLocation").append(attrs("LocationCode", ch.locationCode())).append("/>\n");
         x.append("    </VehRentalCore>\n");
         x.append("    <VehVendorAvails>\n      <VehVendorAvail>\n");
-        x.append("        <Vendor").append(attrs("Code", ch.vendorCode())).append(">NCT Rental</Vendor>\n");
+        x.append("        <Vendor").append(attrs("Code", ch.vendorCode())).append(">").append(escape(ch.vendorName())).append("</Vendor>\n");
         x.append("        <VehAvails>\n");
         for (QuoteLine l : lines) {
             x.append("          <VehAvail>\n");

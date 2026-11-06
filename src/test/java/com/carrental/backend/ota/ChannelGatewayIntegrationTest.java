@@ -1150,6 +1150,14 @@ class ChannelGatewayIntegrationTest {
     }
 
     @Test
+    void supplierNameShownToBrokersIsAChannelSetting() throws Exception {
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", avail("N1")).contains(">NCT Rental</Vendor>"), "unchanged when not set");
+        rules((agg, r) -> agg.put("vendorName", "UR-Drive Jordan"));
+        String v24 = send("/ota/2024A/BKG/OTA_VehAvailRate", avail("N2"));
+        assertTrue(v24.contains(">UR-Drive Jordan</Vendor>") && !v24.contains("NCT Rental"), v24);
+    }
+
+    @Test
     void publicErrorCatalogueAndPlatformHealth() throws Exception {
         String errors = mvc.perform(get("/ota/errors")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         JsonNode list = M.readTree(errors).path("errors");
