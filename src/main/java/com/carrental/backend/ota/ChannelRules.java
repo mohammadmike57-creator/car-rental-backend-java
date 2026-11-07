@@ -48,8 +48,24 @@ public record ChannelRules(
     int overdueHoldHours,         // a car not back by its return time is treated as returning this many hours from now
     boolean allowRetrieve,        // operations agreed with this broker (search and book are always on while bookings are enabled)
     boolean allowModify,
-    boolean allowCancel
+    boolean allowCancel,
+    int graceMinutes,             // a return up to this many minutes after a full day does not start another day (0 = none)
+    List<OneWayRoute> oneWayRoutes  // one-way fee per route; routes not listed use oneWayFee
 ) {
+
+    /** One-way fee for a route between two branch codes; bothWays = also from `to` back to `from`. */
+    public record OneWayRoute(String from, String to, BigDecimal fee, boolean bothWays) {
+        boolean matches(String a, String b) {
+            return (from.equalsIgnoreCase(a) && to.equalsIgnoreCase(b)) || (bothWays && from.equalsIgnoreCase(b) && to.equalsIgnoreCase(a));
+        }
+    }
+
+    /** The one-way fee for pick-up at `from` and return at `to`: the route's own fee, else the general one. Same branch = 0. */
+    public BigDecimal oneWayFeeFor(String from, String to) {
+        if (from == null || to == null || from.equalsIgnoreCase(to)) return BigDecimal.ZERO;
+        for (OneWayRoute r : oneWayRoutes) if (r.matches(from.trim(), to.trim())) return r.fee();
+        return oneWayFee;
+    }
     /** Default time zone of the branches when none is set on the channel. */
     public static final ZoneId DEFAULT_ZONE = ZoneId.of("Asia/Amman");
 
@@ -63,7 +79,7 @@ public record ChannelRules(
     public record Location(String code, String name, String address, boolean pickup, boolean dropOff,
                            String type, String phone, Double latitude, Double longitude,
                            Map<DayOfWeek, Hours> hours, boolean afterHoursPickup, boolean afterHoursReturn, BigDecimal afterHoursFee,
-                           Map<LocalDate, SpecialDay> specialDays) {
+                           Map<LocalDate, SpecialDay> specialDays, BigDecimal airportFee) {
         public boolean openAt(java.time.LocalDateTime t) {
             SpecialDay sd = specialDays.get(t.toLocalDate());
             if (sd != null) {
@@ -206,7 +222,19 @@ public record ChannelRules(
             clamp(r.path("overdueHoldHours").asInt(24), 1, 24 * 14),
             r.path("operations").path("retrieve").asBoolean(true),
             r.path("operations").path("modify").asBoolean(true),
-            r.path("operations").path("cancel").asBoolean(true));
+            r.path("operations").path("cancel").asBoolean(true),
+            clamp(r.path("graceMinutes").asInt(0), 0, 180),
+            routes(r));
+    }
+
+    private static List<OneWayRoute> routes(JsonNode r) {
+        List<OneWayRoute> out = new ArrayList<>();
+        for (JsonNode x : r.path("oneWayRoutes")) {
+            String from = x.path("from").asText("").trim().toUpperCase(Locale.ROOT), to = x.path("to").asText("").trim().toUpperCase(Locale.ROOT);
+            if (from.isEmpty() || to.isEmpty() || from.equals(to) || !x.path("fee").isNumber()) continue;
+            out.add(new OneWayRoute(from, to, money(x.path("fee"), BigDecimal.ZERO), x.path("bothWays").asBoolean(true)));
+        }
+        return List.copyOf(out);
     }
 
     private static ZoneId zone(String id) {
@@ -274,7 +302,9 @@ public record ChannelRules(
         if (!LOCATION_TYPES.contains(type)) type = "CITY";
         return new Location(code, name, address, l.path("pickup").asBoolean(true), l.path("dropOff").asBoolean(true), type,
             l.path("phone").asText("").trim(), lat, lng, hours, l.path("afterHoursPickup").asBoolean(false), l.path("afterHoursReturn").asBoolean(false),
-            money(l.path("afterHoursFee"), BigDecimal.ZERO), special);
+            money(l.path("afterHoursFee"), BigDecimal.ZERO), special,
+            // Airport branches only; free of charge when the supplier chose so (or no amount is set).
+            "AIRPORT".equals(type) && l.path("airportFeeCharged").asBoolean(true) ? money(l.path("stationFee"), BigDecimal.ZERO) : BigDecimal.ZERO);
     }
 
     public Location location(String code) {
@@ -326,7 +356,7 @@ public record ChannelRules(
         return new ChannelRules(true, paymentModel, freeCancellationHours, lateCancellationFeePercent, modificationFee, minLeadHours, maxRentalDays,
             maxHorizonDays, minDriverAge, maxDriverAge, offerValidityMinutes, holdMinutes, buffer, oneWayFee, allowedGroups, locations, "",
             webhookEvents, pricing, groupDetails, allotments, 0, noShowFeePercent, inventoryPushDays, cancellationTiers, currencies,
-            zone, turnaroundMinutes, overdueHoldHours, true, true, true);
+            zone, turnaroundMinutes, overdueHoldHours, true, true, true, graceMinutes, oneWayRoutes);
     }
 
     private static String addressOf(JsonNode rentalLocations, String name, String fallback) {

@@ -576,7 +576,7 @@ public class ChannelBookingService {
         String sell = rate == null ? c.channel().currency() : s.currency().trim().toUpperCase(Locale.ROOT);
         List<String> codes = new ArrayList<>();
         for (ExtraRequest e : s.extras()) codes.add(e.code());
-        List<OtaXml.QuoteLine> lines = OtaXml.quote(c.channel(), new OtaXml.QuoteRequest(s.pickupAt(), s.returnAt(), codes));
+        List<OtaXml.QuoteLine> lines = OtaXml.quote(c.channel(), new OtaXml.QuoteRequest(s.pickupAt(), s.returnAt(), codes), rules.graceMinutes());
         if (lines.isEmpty()) throw ChannelError.NO_AVAILABILITY.ex("No rates are published for " + s.pickupAt().toLocalDate());
         Map<String, OtaXml.Extra> extraByCode = new HashMap<>();
         for (OtaXml.Extra e : OtaXml.extras(c.channel())) { extraByCode.put(e.code().toUpperCase(Locale.ROOT), e); extraByCode.put(e.id().toUpperCase(Locale.ROOT), e); }
@@ -653,7 +653,11 @@ public class ChannelBookingService {
                     cv.excess() == null ? excess : cv.excess(), cv.deposit() == null ? deposit : cv.deposit()));
             }
             BigDecimal fees = BigDecimal.ZERO;
-            if (oneWay && rules.oneWayFee().signum() > 0) fees = fees.add(fee(breakdown, "ONE_WAY", "One-way fee", rules.oneWayFee(), 1));
+            BigDecimal oneWayFee = oneWay ? rules.oneWayFeeFor(s.pickupLocation(), s.returnLocation()) : BigDecimal.ZERO;
+            if (oneWayFee.signum() > 0) fees = fees.add(fee(breakdown, "ONE_WAY", "One-way fee", oneWayFee, 1));
+            // Airport fee: once per rental that starts or ends at an airport with a fee (the higher one if both).
+            BigDecimal airportFee = (pl == null ? BigDecimal.ZERO : pl.airportFee()).max(rl == null ? BigDecimal.ZERO : rl.airportFee());
+            if (airportFee.signum() > 0) fees = fees.add(fee(breakdown, "AIRPORT", "Airport fee", airportFee, 1));
             if (afterPick && pl.afterHoursFee().signum() > 0) fees = fees.add(fee(breakdown, "AFTER_HOURS", "After-hours pick-up", pl.afterHoursFee(), 1));
             if (afterReturn && rl.afterHoursFee().signum() > 0) fees = fees.add(fee(breakdown, "AFTER_HOURS", "After-hours return", rl.afterHoursFee(), 1));
             Integer age = s.driverAge();
@@ -911,7 +915,7 @@ public class ChannelBookingService {
         if (s.pickupAt().isAfter(now.plusDays(c.rules().maxHorizonDays()))) {
             throw ChannelError.INVALID_DATE.ex("Bookings are accepted up to " + c.rules().maxHorizonDays() + " days ahead");
         }
-        int days = OtaXml.rentalDays(s.pickupAt(), s.returnAt());
+        int days = OtaXml.rentalDays(s.pickupAt(), s.returnAt(), c.rules().graceMinutes());
         if (days > c.rules().maxRentalDays()) throw ChannelError.INVALID_DATE.ex("The longest rental is " + c.rules().maxRentalDays() + " days");
         ChannelCommercial com = ChannelCommercial.of(c.channel().raw().path("bookingRules"));
         if (days < com.minRentalDays()) throw ChannelError.INVALID_DATE.ex("The shortest rental is " + com.minRentalDays() + " days");

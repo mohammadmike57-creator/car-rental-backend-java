@@ -38,9 +38,16 @@ public final class OtaXml {
     public record QuoteRequest(LocalDateTime pickUp, LocalDateTime dropOff, List<String> equipCodes) {}
 
     public static int rentalDays(LocalDateTime pickUp, LocalDateTime dropOff) {
+        return rentalDays(pickUp, dropOff, 0);
+    }
+
+    /** Every started 24h block counts, except that up to graceMinutes past a full day is free. */
+    public static int rentalDays(LocalDateTime pickUp, LocalDateTime dropOff, int graceMinutes) {
         long minutes = Duration.between(pickUp, dropOff).toMinutes();
         if (minutes <= 0) return 1;
-        return (int) Math.max(1, (minutes + 1439) / 1440); // every started 24h block counts
+        long full = minutes / 1440, over = minutes % 1440;
+        if (over > 0 && (full == 0 || over > Math.max(0, graceMinutes))) full++;
+        return (int) Math.max(1, full);
     }
 
     static boolean isOpenEnded(JsonNode tier) {
@@ -153,7 +160,12 @@ public final class OtaXml {
     }
 
     public static List<QuoteLine> quote(ChannelSnapshot ch, QuoteRequest req) {
-        int days = rentalDays(req.pickUp(), req.dropOff());
+        return quote(ch, req, 0);
+    }
+
+    /** graceMinutes: the booking API's grace period; the /ota/v1 search always uses 0 (unchanged). */
+    public static List<QuoteLine> quote(ChannelSnapshot ch, QuoteRequest req, int graceMinutes) {
+        int days = rentalDays(req.pickUp(), req.dropOff(), graceMinutes);
         LocalDate pickUpDate = req.pickUp().toLocalDate();
         LocalDate returnDate = req.dropOff().toLocalDate();
         JsonNode plan = findPlan(ch.publishedRatePlans(), pickUpDate);

@@ -61,6 +61,15 @@ class OtaXmlTest {
     }
 
     @Test
+    void gracePeriodOnlyWhenSet() {
+        assertEquals(4, OtaXml.rentalDays(at("03-01T10:00"), at("03-04T11:00"), 0));
+        assertEquals(3, OtaXml.rentalDays(at("03-01T10:00"), at("03-04T11:00"), 60));
+        assertEquals(4, OtaXml.rentalDays(at("03-01T10:00"), at("03-04T11:01"), 60));
+        assertEquals(1, OtaXml.rentalDays(at("03-01T10:00"), at("03-01T10:30"), 60), "under a day is always 1 day");
+        assertEquals(OtaXml.rentalDays(at("03-01T10:00"), at("03-04T10:01")), OtaXml.rentalDays(at("03-01T10:00"), at("03-04T10:01"), 0));
+    }
+
+    @Test
     void quoteUsesPublishedTiersAndCapsExtras() throws Exception {
         List<OtaXml.QuoteLine> q = OtaXml.quote(channel(), new OtaXml.QuoteRequest(at("05-01T10:00"), at("05-06T10:00"), List.of("13")));
         OtaXml.QuoteLine sdar = q.stream().filter(l -> l.sippCode().equals("SDAR")).findFirst().orElseThrow();

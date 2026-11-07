@@ -413,6 +413,37 @@ class ChannelGatewayIntegrationTest {
     }
 
     @Test
+    void gracePeriodAirportFeeAndOneWayFeePerRoute() throws Exception {
+        // 45 minutes late on the 5th day: without a grace period it is 6 days (240 + GPS 25)
+        String late = avail("G1").replace("-05-06T10:00:00", "-05-06T10:45:00");
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", late).contains("EstimatedTotalAmount=\"265.00\""));
+        rules((agg, r) -> r.put("graceMinutes", 60));
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", late).contains("EstimatedTotalAmount=\"225.00\""), "within the grace period: 5 days");
+        String later = late.replace("-05-06T10:45:00", "-05-06T11:01:00");
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", later).contains("EstimatedTotalAmount=\"265.00\""), "past the grace period: 6 days");
+
+        // Airport fee once per rental at the airport branch
+        rules((agg, r) -> ((ObjectNode) r.get("locations").get(0)).put("stationFee", 15));
+        String a = send("/ota/v1/BKG/OTA_VehAvailRate", avail("G2"));
+        assertTrue(a.contains("Purpose=\"AIRPORT\"") && a.contains("Airport fee") && a.contains("EstimatedTotalAmount=\"240.00\""), a);
+        // Free of charge chosen: no fee even with an amount saved
+        rules((agg, r) -> ((ObjectNode) r.get("locations").get(0)).put("airportFeeCharged", false));
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", avail("G2a")).contains("EstimatedTotalAmount=\"225.00\""));
+        rules((agg, r) -> ((ObjectNode) r.get("locations").get(0)).put("airportFeeCharged", true));
+        // A city branch never charges it, even with an amount saved
+        rules((agg, r) -> ((ObjectNode) r.get("locations").get(0)).put("type", "CITY"));
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", avail("G2b")).contains("EstimatedTotalAmount=\"225.00\""));
+        rules((agg, r) -> ((ObjectNode) r.get("locations").get(0)).put("type", "AIRPORT"));
+
+        // One-way: the general fee (30), then the route's own fee (50, both ways)
+        String oneWay = avail("G3").replace("<ReturnLocation LocationCode=\"AMM\"/>", "<ReturnLocation LocationCode=\"AQJ\"/>");
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", oneWay).contains("EstimatedTotalAmount=\"270.00\""));
+        rules((agg, r) -> r.putArray("oneWayRoutes").addObject().put("from", "AQJ").put("to", "AMM").put("fee", 50));
+        String w = send("/ota/v1/BKG/OTA_VehAvailRate", oneWay);
+        assertTrue(w.contains("Purpose=\"ONE_WAY\"") && w.contains("EstimatedTotalAmount=\"290.00\""), w);
+    }
+
+    @Test
     void allotmentsAndStopSellPerBroker() throws Exception {
         rules((agg, r) -> r.putArray("allotments").addObject().put("group", "SDAR").put("from", Y + "-05-01").put("to", Y + "-05-31").put("quantity", 0));
         String a = send("/ota/v1/BKG/OTA_VehAvailRate", avail("L1"));
