@@ -62,13 +62,18 @@ public record ChannelCommercial(
 
     /** The percent change for one group and itinerary (sum of every rule that applies), kept within -90 % … +500 %. */
     public BigDecimal percentFor(String sipp, LocalDateTime pickup, LocalDateTime bookedAt) {
+        return percentFor(sipp, pickup, bookedAt, false);
+    }
+
+    /** skipLeadTime: leave out the early-booking and last-minute percent (another rule already prices lead time). */
+    public BigDecimal percentFor(String sipp, LocalDateTime pickup, LocalDateTime bookedAt, boolean skipLeadTime) {
         GroupTerms g = groups.get(sipp.toUpperCase(Locale.ROOT));
         BigDecimal pct = g != null && g.markupPercent() != null ? g.markupPercent() : markupPercent;
         BigDecimal dow = pickupDayPercent.get(pickup.getDayOfWeek());
         if (dow != null) pct = pct.add(dow);
         long hoursAhead = ChronoUnit.HOURS.between(bookedAt, pickup);
-        if (earlyBookingDays > 0 && earlyBookingPercent.signum() != 0 && hoursAhead >= earlyBookingDays * 24L) pct = pct.add(earlyBookingPercent);
-        if (lastMinuteHours > 0 && lastMinutePercent.signum() != 0 && hoursAhead < lastMinuteHours) pct = pct.add(lastMinutePercent);
+        if (!skipLeadTime && earlyBookingDays > 0 && earlyBookingPercent.signum() != 0 && hoursAhead >= earlyBookingDays * 24L) pct = pct.add(earlyBookingPercent);
+        if (!skipLeadTime && lastMinuteHours > 0 && lastMinutePercent.signum() != 0 && hoursAhead < lastMinuteHours) pct = pct.add(lastMinutePercent);
         return pct.max(BigDecimal.valueOf(-90)).min(BigDecimal.valueOf(500));
     }
 

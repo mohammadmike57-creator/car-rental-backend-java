@@ -444,6 +444,25 @@ class ChannelGatewayIntegrationTest {
     }
 
     @Test
+    void rateRulesPriceDayByDayOnlyForChannelsSwitchedToDynamic() throws Exception {
+        stateService.applyPatch(M.writeValueAsString(M.createObjectNode().set("ops", M.createArrayNode().add(M.createObjectNode()
+            .put("op", "set").put("key", "channelPricing").set("value", M.readTree(("{\"version\":1,\"published\":{\"seasonal\":{\"enabled\":true,\"stack\":false,\"rules\":["
+                + "{\"name\":\"Eid Al-Adha\",\"kind\":\"eid_adha\",\"from\":\"%s-05-04\",\"to\":\"%s-05-05\",\"priority\":1,\"active\":true,"
+                + "\"groups\":[\"SDAR\"],\"adjust\":{\"type\":\"fixed\",\"value\":60}}]}}}").formatted(Y, Y)))))));
+        // Default (net): unchanged, 5 × 40 + GPS 25
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", avail("D1")).contains("EstimatedTotalAmount=\"225.00\""));
+        // Dynamic: 3 days × 40 + 2 Eid days × 60 + GPS 25 = 265
+        rules((agg, r) -> agg.put("pricingMode", "dynamic"));
+        String a = send("/ota/v1/BKG/OTA_VehAvailRate", avail("D2"));
+        assertTrue(a.contains("EstimatedTotalAmount=\"265.00\""), a);
+        assertTrue(a.contains("<Calculation UnitCharge=\"48.00\" UnitName=\"Day\" Quantity=\"5\"/>"), "average of the day rates: " + a);
+        // and the booking keeps that price
+        String r = send("/ota/v1/BKG/OTA_VehRes", vehRes(firstOffer(a), "DYN-1"));
+        assertTrue(r.contains("EstimatedTotalAmount=\"265.00\""), r);
+        rules((agg, rr) -> agg.put("pricingMode", "net"));
+    }
+
+    @Test
     void allotmentsAndStopSellPerBroker() throws Exception {
         rules((agg, r) -> r.putArray("allotments").addObject().put("group", "SDAR").put("from", Y + "-05-01").put("to", Y + "-05-31").put("quantity", 0));
         String a = send("/ota/v1/BKG/OTA_VehAvailRate", avail("L1"));
