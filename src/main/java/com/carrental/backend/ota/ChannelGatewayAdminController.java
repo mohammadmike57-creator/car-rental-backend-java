@@ -180,25 +180,6 @@ public class ChannelGatewayAdminController {
         }).orElseGet(this::notFound);
     }
 
-    /** Cars of one group free for a rental, exactly as a broker search counts them (Rate rules preview). */
-    @GetMapping("/availability")
-    public ResponseEntity<?> availability(@PathVariable String channelId, @RequestParam String group, @RequestParam String from, @RequestParam String to, Authentication auth) {
-        if (!allowed(auth)) return forbidden();
-        java.time.LocalDateTime a, b;
-        try { a = java.time.LocalDateTime.parse(from.length() == 16 ? from + ":00" : from); b = java.time.LocalDateTime.parse(to.length() == 16 ? to + ":00" : to); }
-        catch (Exception e) { return ResponseEntity.badRequest().body(Map.of("error", "from and to must be YYYY-MM-DDTHH:mm")); }
-        if (!b.isAfter(a)) return ResponseEntity.badRequest().body(Map.of("error", "to must be after from"));
-        return channels.find(channelId).<ResponseEntity<?>>map(ch -> {
-            ChannelBookingService.Ctx c = core.context(ch, false);
-            ChannelBookingService.Avail av = core.check(c, group.trim().toUpperCase(java.util.Locale.ROOT), a, b, null, null);
-            Map<String, Object> out = new java.util.LinkedHashMap<>();
-            out.put("group", group.trim().toUpperCase(java.util.Locale.ROOT));
-            out.put("available", av.count());
-            if (av.reason() != null) out.put("reason", av.reason());
-            return ResponseEntity.ok(out);
-        }).orElseGet(this::notFound);
-    }
-
     @PostMapping("/inventory/push")
     public ResponseEntity<?> pushInventory(@PathVariable String channelId, Authentication auth) {
         if (!allowed(auth)) return forbidden();

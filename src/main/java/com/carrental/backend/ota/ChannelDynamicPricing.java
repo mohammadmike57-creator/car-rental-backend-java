@@ -17,9 +17,9 @@ import java.util.function.BiFunction;
  *
  *   1. base daily rate: the published rate of the day's period, for the whole rental's length
  *   2. seasonal / event rule: the highest-priority rule replaces the rate (all of them only when stacking is on)
- *   3. last-minute rule by lead time (optionally split by cars available)
- *   4. availability rule (not again when the last-minute rule already priced availability)
- *   5. minimum / maximum daily price
+ *   3. last-minute rule by lead time
+ *   4. minimum / maximum daily price
+ * Prices never depend on how many cars are free (a sold-out group is still not offered: that is inventory, not price).
  *
  * Used only for channels whose rate mode is "dynamic" or "restricted" (seasonal rules only);
  * channels on "net" (the default) are priced exactly as before.
@@ -31,8 +31,6 @@ public final class ChannelDynamicPricing {
     public record Day(LocalDate date, double base, double rate, String rule, List<String> steps) {}
     public record Result(boolean bookable, String reason, int days, List<Day> perDay, double total, List<String> notes) {}
 
-    private static final List<String> EVENT_KINDS = List.of("eid_fitr", "eid_adha", "ramadan", "christmas", "new_year", "national", "custom");
-    private static final List<String> HIGH_KINDS = List.of("high", "peak");
 
     /** The channel's rate mode: net (default), dynamic or restricted. */
     public static String mode(JsonNode channel) {
@@ -80,23 +78,20 @@ public final class ChannelDynamicPricing {
     }
 
     public static Result price(JsonNode cfg, String group, String location, String channelType, LocalDateTime pickup, LocalDateTime dropOff,
-                               LocalDateTime now, int available, BiFunction<LocalDate, Integer, Double> baseDaily, int graceMinutes, String mode) {
+                               LocalDateTime now, BiFunction<LocalDate, Integer, Double> baseDaily, int graceMinutes, String mode) {
         int days = OtaXml.rentalDays(pickup, dropOff, graceMinutes);
         double leadHours = Duration.between(now, pickup).toMinutes() / 60.0;
         List<String> notes = new ArrayList<>();
-        if (available <= 0) return new Result(false, "No car of this group is free for these dates", days, List.of(), 0, notes);
 
         boolean full = "dynamic".equals(mode);
         boolean leadOn = full && cfg.path("leadTime").path("enabled").asBoolean(false) && listHas(cfg.path("leadTime").path("channels"), channelType);
-        boolean availOn = full && cfg.path("availability").path("enabled").asBoolean(false) && listHas(cfg.path("availability").path("channels"), channelType);
-        JsonNode lead = null, leadBand = null;
+        JsonNode lead = null;
         if (leadOn) {
             for (JsonNode t : cfg.path("leadTime").path("tiers")) {
                 double from = t.path("fromHours").asDouble(0);
                 boolean open = !t.path("toHours").isNumber();
                 if (leadHours >= from && (open || leadHours < t.path("toHours").asDouble())) { lead = t; break; }
             }
-            if (lead != null) for (JsonNode b : lead.path("byAvailability")) if (inBand(b, available)) { leadBand = b; break; }
         }
         Double minDaily = optional(cfg.path("limits").path("minDaily")), maxDaily = optional(cfg.path("limits").path("maxDaily"));
         JsonNode gl = cfg.path("limits").path("groups").path(group.toUpperCase(Locale.ROOT));
@@ -104,10 +99,6 @@ public final class ChannelDynamicPricing {
             if (optional(gl.path("minDaily")) != null) minDaily = optional(gl.path("minDaily"));
             if (optional(gl.path("maxDaily")) != null) maxDaily = optional(gl.path("maxDaily"));
         }
-        List<Integer> weekend = new ArrayList<>();
-        if (cfg.path("weekendDays").isArray()) cfg.path("weekendDays").forEach(d -> weekend.add(d.asInt()));
-        else { weekend.add(5); weekend.add(6); }
-
         List<Day> out = new ArrayList<>();
         double total = 0;
         for (int i = 0; i < days; i++) {
@@ -129,31 +120,11 @@ public final class ChannelDynamicPricing {
                 }
             }
             if (lead != null) {
-                JsonNode a = leadBand != null ? leadBand.path("adjust") : lead.path("adjust");
-                if (!"none".equals(a.path("type").asText("none"))) {
-                    double to = applyAdjust(rate, a);
-                    if (round(to) != round(rate)) steps.add("Last minute (" + describe(a) + "): " + money(rate) + " → " + money(to));
+                JsonNode adj = leadAdjust(cfg, lead, days);
+                if (!"none".equals(adj.path("type").asText("none"))) {
+                    double to = applyAdjust(rate, adj);
+                    if (round(to) != round(rate)) steps.add("Last minute (" + describe(adj) + "): " + money(rate) + " → " + money(to));
                     rate = to;
-                }
-            }
-            if (availOn && leadBand == null) {
-                int dow = date.getDayOfWeek().getValue() % 7;   // 0 = Sunday, as in JavaScript
-                String kind = rule == null ? "" : rule.path("kind").asText("");
-                for (JsonNode t : cfg.path("availability").path("tiers")) {
-                    if (!inBand(t, available) || !listHasText(t.path("locations"), location)) continue;
-                    String when = t.path("when").asText("all");
-                    boolean applies = "all".equals(when) || ("weekend".equals(when) && weekend.contains(dow))
-                        || ("event".equals(when) && EVENT_KINDS.contains(kind)) || ("high".equals(when) && HIGH_KINDS.contains(kind));
-                    if (!applies) continue;
-                    if (!"none".equals(t.path("adjust").path("type").asText("none"))) {
-                        double to = applyAdjust(rate, t.path("adjust"));
-                        if (round(to) != round(rate)) steps.add("Availability (" + describe(t.path("adjust")) + "): " + money(rate) + " → " + money(to));
-                        rate = to;
-                    }
-                    Double tMin = optional(t.path("minDaily")), tMax = optional(t.path("maxDaily"));
-                    if (tMin != null && rate < tMin) { steps.add("Availability minimum " + money(tMin)); rate = tMin; }
-                    if (tMax != null && rate > tMax) { steps.add("Availability maximum " + money(tMax)); rate = tMax; }
-                    break;
                 }
             }
             if (minDaily != null && rate < minDaily) { steps.add("Minimum daily price " + money(minDaily)); rate = minDaily; }
@@ -162,8 +133,20 @@ public final class ChannelDynamicPricing {
             out.add(new Day(date, round(base), rate, rule == null ? null : rule.path("name").asText(null), steps));
             total += rate;
         }
-        if (leadBand != null) notes.add("Availability is priced inside the last-minute rule, so the availability rule is not applied again.");
         return new Result(true, null, days, out, round(total), notes);
+    }
+
+    /** The last-minute change for this rental length: the tier's column for the length (leadTime.lengthBands), else its single change. */
+    static JsonNode leadAdjust(JsonNode cfg, JsonNode tier, int days) {
+        JsonNode bands = cfg.path("leadTime").path("lengthBands"), cells = tier.path("byLength");
+        if (bands.isArray() && cells.isArray()) {
+            for (int i = 0; i < bands.size() && i < cells.size(); i++) {
+                JsonNode b = bands.get(i);
+                int from = b.path("fromDay").asInt(1);
+                if (days >= from && (!b.path("toDay").isNumber() || days <= b.path("toDay").asInt())) return cells.get(i);
+            }
+        }
+        return tier.path("adjust");
     }
 
     /** Seasonal rules for one day, highest priority first (list order breaks ties). */
@@ -200,10 +183,6 @@ public final class ChannelDynamicPricing {
             i += n;
         }
         return sb.toString();
-    }
-
-    private static boolean inBand(JsonNode b, int n) {
-        return n >= b.path("minCars").asInt(0) && (!b.path("maxCars").isNumber() || n <= b.path("maxCars").asInt());
     }
 
     private static boolean listHas(JsonNode list, String v) {

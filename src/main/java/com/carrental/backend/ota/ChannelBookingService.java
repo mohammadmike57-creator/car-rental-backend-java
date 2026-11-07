@@ -606,13 +606,11 @@ public class ChannelBookingService {
             if (!rules.groupAllowed(l.sippCode())) continue;
             int days = l.days();
             BigDecimal daily = l.dailyRate(), baseTotal = l.baseTotal();
-            Avail early = null;
             ChannelDynamicPricing.Result dyn = null;
             if (pricing != null && !"Closed".equals(l.status())) {
-                early = check(c, l.sippCode(), s.pickupAt(), s.returnAt(), excludeOffer, excludeReservation);
                 BigDecimal fallback = l.dailyRate();
                 dyn = ChannelDynamicPricing.price(pricing, l.sippCode(), s.pickupLocation(), channelType, s.pickupAt(), s.returnAt(), rules.now(),
-                    early.count(), (date, n) -> publishedDaily(c, l.sippCode(), date, n, fallback), rules.graceMinutes(), rateMode);
+                    (date, n) -> publishedDaily(c, l.sippCode(), date, n, fallback), rules.graceMinutes(), rateMode);
                 if (dyn.bookable()) {
                     baseTotal = BigDecimal.valueOf(dyn.total()).setScale(2, RoundingMode.HALF_UP);
                     daily = baseTotal.divide(BigDecimal.valueOf(days), 2, RoundingMode.HALF_UP);
@@ -701,7 +699,7 @@ public class ChannelBookingService {
                 else if (days < minDays) { status = "Closed"; reason = "Minimum rental " + minDays + " days for this group"; }
             }
             if (!"Closed".equals(status)) {
-                Avail av = early != null ? early : check(c, l.sippCode(), s.pickupAt(), s.returnAt(), excludeOffer, excludeReservation);
+                Avail av = check(c, l.sippCode(), s.pickupAt(), s.returnAt(), excludeOffer, excludeReservation);
                 available = av.count();
                 if (available <= 0) { status = "Closed"; reason = av.reason() != null ? av.reason() : "Sold out for these dates"; }
                 else status = "Available";
