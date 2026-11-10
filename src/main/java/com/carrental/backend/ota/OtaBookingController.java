@@ -104,7 +104,7 @@ public class OtaBookingController {
         Function<ChannelGateway.Call, String> action = switch (rq) {
             case "OTA_VehLocSearchRQ" -> c -> {
                 OtaBookingXml.Parsed p = body == null || body.isBlank() ? null : OtaBookingXml.parse(body, rq);
-                return OtaBookingXml.locations(p == null ? null : p.echoToken(), prod(c), core.locations(c.ctx()), c.ctx().channel().vendorCode());
+                return OtaBookingXml.locations(p == null ? null : p.echoToken(), prod(c), core.locations(c.ctx()), c.ctx().channel().vendorCodeFor(requestedVendor(body)));
             };
             case "OTA_VehAvailRateRQ" -> c -> {
                 OtaBookingXml.Parsed p = OtaBookingXml.parse(body, rq);
@@ -119,30 +119,30 @@ public class OtaBookingController {
                     offers = List.of();
                     warning = e.getMessage();
                 }
-                return OtaBookingXml.availability(p.echoToken(), prod(c), s, offers, c.ctx().channel().vendorCode(), warning);
+                return OtaBookingXml.availability(p.echoToken(), prod(c), s, offers, c.ctx().channel().vendorCodeFor(requestedVendor(body)), warning);
             };
             case "OTA_VehResRQ" -> c -> {
                 OtaBookingXml.Parsed p = OtaBookingXml.parse(body, rq);
                 Reservation r = core.create(c.ctx(), OtaBookingXml.booking(p.root(), c.ctx().rules(), idem));
-                return OtaBookingXml.reservation("OTA_VehResRS", p.echoToken(), prod(c), r, c.ctx().channel().vendorCode());
+                return OtaBookingXml.reservation("OTA_VehResRS", p.echoToken(), prod(c), r, c.ctx().channel().vendorCodeFor(requestedVendor(body)));
             };
             case "OTA_VehRetResRQ" -> c -> {
                 OtaBookingXml.Parsed p = OtaBookingXml.parse(body, rq);
                 Reservation r = core.retrieve(c.ctx(), OtaBookingXml.uniqueId(p.root()));
                 checkSurname(p, r);
-                return OtaBookingXml.reservation("OTA_VehRetResRS", p.echoToken(), prod(c), r, c.ctx().channel().vendorCode());
+                return OtaBookingXml.reservation("OTA_VehRetResRS", p.echoToken(), prod(c), r, c.ctx().channel().vendorCodeFor(requestedVendor(body)));
             };
             case "OTA_VehModifyRQ" -> c -> {
                 OtaBookingXml.Parsed p = OtaBookingXml.parse(body, rq);
                 Reservation r = core.modify(c.ctx(), OtaBookingXml.modify(p.root(), c.ctx().rules()));
-                return OtaBookingXml.reservation("OTA_VehModifyRS", p.echoToken(), prod(c), r, c.ctx().channel().vendorCode());
+                return OtaBookingXml.reservation("OTA_VehModifyRS", p.echoToken(), prod(c), r, c.ctx().channel().vendorCodeFor(requestedVendor(body)));
             };
             case "OTA_VehCancelRQ" -> c -> {
                 OtaBookingXml.Parsed p = OtaBookingXml.parse(body, rq);
                 String id = OtaBookingXml.uniqueId(p.root());
                 checkSurname(p, core.get(c.ctx(), id));
                 Reservation r = core.cancel(c.ctx(), id, OtaBookingXml.text(OtaBookingXml.first(OtaBookingXml.first(p.root(), "TPA_Extensions"), "Reason")));
-                return OtaBookingXml.reservation("OTA_VehCancelRS", p.echoToken(), prod(c), r, c.ctx().channel().vendorCode());
+                return OtaBookingXml.reservation("OTA_VehCancelRS", p.echoToken(), prod(c), r, c.ctx().channel().vendorCodeFor(requestedVendor(body)));
             };
             case "OTA_VehRateRuleRQ" -> c -> {
                 OtaBookingXml.Parsed p = OtaBookingXml.parse(body, rq);
@@ -150,14 +150,14 @@ public class OtaBookingController {
                 Search s = OtaBookingXml.first(p.root(), "VehRentalCore") == null ? null : OtaBookingXml.search(p.root(), c.ctx().rules());
                 if (offer == null && s == null) throw ChannelError.INVALID_REQUEST.ex("Send Reference Type=\"16\" with the offer id, or VehRentalCore and VehPref");
                 RateRule rr = core.rateRule(c.ctx(), offer, s);
-                return OtaBookingXml.rateRule(p.echoToken(), prod(c), rr.search(), rr, c.ctx().channel().vendorCode());
+                return OtaBookingXml.rateRule(p.echoToken(), prod(c), rr.search(), rr, c.ctx().channel().vendorCodeFor(requestedVendor(body)));
             };
             case "OTA_VehLocDetailRQ" -> c -> {
                 OtaBookingXml.Parsed p = OtaBookingXml.parse(body, rq);
                 String code = OtaBookingXml.attr(OtaBookingXml.first(p.root(), "Location"), "LocationCode");
                 if (code.isEmpty()) code = OtaBookingXml.attr(OtaBookingXml.first(p.root(), "LocationDetail"), "Code");
                 if (code.isEmpty()) throw ChannelError.INVALID_REQUEST.ex("Location LocationCode is required");
-                return OtaBookingXml.locationDetail(p.echoToken(), prod(c), core.location(c.ctx(), code), c.ctx().channel().vendorCode());
+                return OtaBookingXml.locationDetail(p.echoToken(), prod(c), core.location(c.ctx(), code), c.ctx().channel().vendorCodeFor(requestedVendor(body)));
             };
             case "OTA_PingRQ" -> c -> {
                 OtaBookingXml.Parsed p = body == null || body.isBlank() ? null : OtaBookingXml.parse(body, rq);
@@ -223,6 +223,16 @@ public class OtaBookingController {
     private static boolean prod(ChannelGateway.Call c) { return !c.ctx().sandbox(); }
 
     /** EchoToken from a body that may not even parse, so errors still echo it. */
+    private static final java.util.regex.Pattern VENDOR_PREF = java.util.regex.Pattern.compile(
+        "<(?:[\\w-]+:)?(?:VendorPref|Vendor)\\b[^>]*?\\b(?:Code|CompanyShortName)\\s*=\\s*[\"']([A-Za-z0-9]{1,8})[\"']");
+
+    /** The supplier code the broker asked for (VendorPrefs/VendorPref or Vendor Code), if any. */
+    static String requestedVendor(String body) {
+        if (body == null) return null;
+        java.util.regex.Matcher m = VENDOR_PREF.matcher(body);
+        return m.find() ? m.group(1) : null;
+    }
+
     private static String echo(String body) {
         if (body == null) return null;
         int i = body.indexOf("EchoToken=\"");

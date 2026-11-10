@@ -59,6 +59,39 @@ public class ChannelSnapshot {
         return company.isBlank() || company.toUpperCase(Locale.ROOT).contains("NCT") ? DEFAULT_SUPPLIER : company;
     }
     public String vendorCode() { return text(channel, "vendorCode", "NCT").toUpperCase(Locale.ROOT); }
+
+    /** First three letters or digits of a name: "UR-Drive Jordan" gives URD. */
+    public static String codeFromName(String name) {
+        String c = (name == null ? "" : name).toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "");
+        return c.length() > 3 ? c.substring(0, 3) : c;
+    }
+
+    /** First letter of each word: "UR-Drive Jordan" gives UDJ. */
+    public static String initials(String name) {
+        StringBuilder b = new StringBuilder();
+        for (String w : (name == null ? "" : name).toUpperCase(Locale.ROOT).split("[^A-Z0-9]+")) if (!w.isEmpty()) b.append(w.charAt(0));
+        return b.toString();
+    }
+
+    /**
+     * Vendor codes a broker may use for this supplier: the channel's code (NCT when none is set), NCT,
+     * and the codes made from the supplier name (URD and UDJ for UR-Drive Jordan).
+     */
+    public java.util.Set<String> acceptedVendorCodes() {
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        out.add(vendorCode());
+        out.add("NCT");
+        String name = vendorName();
+        if (codeFromName(name).length() >= 2) out.add(codeFromName(name));
+        if (initials(name).length() >= 2) out.add(initials(name));
+        return out;
+    }
+
+    /** The code to answer with: the one the broker used when it is one of ours, else the channel's code. */
+    public String vendorCodeFor(String requested) {
+        String r = requested == null ? "" : requested.trim().toUpperCase(Locale.ROOT);
+        return !r.isEmpty() && acceptedVendorCodes().contains(r) ? r : vendorCode();
+    }
     public String locationCode() { return text(channel, "locationCode", "AMM").toUpperCase(Locale.ROOT); }
     public String currency() { return text(channel, "currency", "USD"); }
     public String status() { return text(channel, "status", "active"); }

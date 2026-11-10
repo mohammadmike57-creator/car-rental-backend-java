@@ -1205,6 +1205,18 @@ class ChannelGatewayIntegrationTest {
     }
 
     @Test
+    void brokerMayUseNctOrTheCodeOfTheSupplierName() throws Exception {
+        java.util.function.Function<String, String> withVendor = code -> avail("V-" + code)
+            .replace("<VehAvailRQCore>", "<VehAvailRQCore><VendorPrefs><VendorPref Code=\"" + code + "\"/></VendorPrefs>");
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", avail("V0")).contains("<Vendor Code=\"NCT\""), "no code sent: unchanged");
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", withVendor.apply("NCT")).contains("<Vendor Code=\"NCT\""), "NCT answered with NCT");
+        String urd = send("/ota/v1/BKG/OTA_VehAvailRate", withVendor.apply("URD"));
+        assertTrue(urd.contains("<Vendor Code=\"URD\"") && urd.contains("<Success"), "URD (from UR-Drive Jordan) answered with URD: " + urd);
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", withVendor.apply("udj")).contains("<Vendor Code=\"UDJ\""), "initials, any case");
+        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", withVendor.apply("ZZZ")).contains("<Vendor Code=\"NCT\""), "unknown code: the channel's code");
+    }
+
+    @Test
     void supplierNameShownToBrokersIsAChannelSetting() throws Exception {
         String v1 = send("/ota/v1/BKG/OTA_VehAvailRate", avail("N1"));
         assertTrue(v1.contains(">UR-Drive Jordan</Vendor>") && !v1.contains("NCT Rental"), "company default, never the NCT name: " + v1);
