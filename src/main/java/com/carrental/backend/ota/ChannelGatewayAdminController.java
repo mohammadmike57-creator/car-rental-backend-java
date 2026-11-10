@@ -130,7 +130,7 @@ public class ChannelGatewayAdminController {
         d.setEventType("webhook.test");
         d.setUrl(rules.webhookUrl());
         d.setPayload("{\"event_id\":\"" + id + "\",\"event_type\":\"webhook.test\",\"channel_code\":\"" + OtaXml.escape(ch.get().urlCode())
-            + "\",\"occurred_at\":\"" + Instant.now() + "\",\"data\":{\"message\":\"Test event from NCT Rental\"}}");
+            + "\",\"occurred_at\":\"" + Instant.now() + "\",\"data\":{\"message\":\"Test event from UR-Drive Jordan\"}}");
         d.setStatus(ChannelWebhookDelivery.Status.PENDING);
         d.setCreatedAt(Instant.now());
         d.setNextAttemptAt(Instant.now());

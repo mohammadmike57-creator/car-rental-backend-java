@@ -31,7 +31,7 @@ public final class OtaBookingXml {
 
     /** The channel's supplier name for the response being written (set around each OTA call by OtaBookingController). */
     static final ThreadLocal<String> VENDOR_NAME = new ThreadLocal<>();
-    static String vendorName() { String n = VENDOR_NAME.get(); return n == null || n.isBlank() ? "NCT Rental" : n; }
+    static String vendorName() { String n = VENDOR_NAME.get(); return n == null || n.isBlank() ? ChannelSnapshot.DEFAULT_SUPPLIER : n; }
 
 
     private OtaBookingXml() {}

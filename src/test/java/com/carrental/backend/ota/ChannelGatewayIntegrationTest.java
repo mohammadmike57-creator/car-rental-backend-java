@@ -1206,7 +1206,8 @@ class ChannelGatewayIntegrationTest {
 
     @Test
     void supplierNameShownToBrokersIsAChannelSetting() throws Exception {
-        assertTrue(send("/ota/v1/BKG/OTA_VehAvailRate", avail("N1")).contains(">NCT Rental</Vendor>"), "unchanged when not set");
+        String v1 = send("/ota/v1/BKG/OTA_VehAvailRate", avail("N1"));
+        assertTrue(v1.contains(">UR-Drive Jordan</Vendor>") && !v1.contains("NCT Rental"), "company default, never the NCT name: " + v1);
         rules((agg, r) -> agg.put("vendorName", "UR-Drive Jordan"));
         String v24 = send("/ota/2024A/BKG/OTA_VehAvailRate", avail("N2"));
         assertTrue(v24.contains(">UR-Drive Jordan</Vendor>") && !v24.contains("NCT Rental"), v24);

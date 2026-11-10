@@ -16,9 +16,13 @@ public class ChannelSnapshot {
     private final JsonNode channel;
     private final JsonNode fleet;
     private final JsonNode stopSales;
+    private final String companyName;
 
-    public ChannelSnapshot(JsonNode channel, JsonNode fleet, JsonNode stopSales) {
+    public ChannelSnapshot(JsonNode channel, JsonNode fleet, JsonNode stopSales) { this(channel, fleet, stopSales, null); }
+
+    public ChannelSnapshot(JsonNode channel, JsonNode fleet, JsonNode stopSales, String companyName) {
         this.channel = channel;
+        this.companyName = companyName;
         this.fleet = fleet == null || !fleet.isArray() ? com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.arrayNode() : fleet;
         this.stopSales = forChannel(stopSales, text(channel, "id", ""));
     }
@@ -44,8 +48,16 @@ public class ChannelSnapshot {
     public String id() { return text(channel, "id", ""); }
     public String name() { return text(channel, "name", id()); }
     public String channelCode() { return text(channel, "channelCode", ""); }
-    /** The supplier name brokers see (Vendor). Channels set it explicitly; channels made before it existed keep the old name. */
-    public String vendorName() { return text(channel, "vendorName", "NCT Rental"); }
+    /** Supplier name used when a channel has none of its own; brokers never see the NCT name. */
+    public static final String DEFAULT_SUPPLIER = "UR-Drive Jordan";
+
+    /** The supplier name brokers see (Vendor): the channel's own, else the company name, else UR-Drive Jordan. */
+    public String vendorName() {
+        String own = text(channel, "vendorName", "");
+        if (!own.isBlank()) return own;
+        String company = companyName == null ? "" : companyName.trim();
+        return company.isBlank() || company.toUpperCase(Locale.ROOT).contains("NCT") ? DEFAULT_SUPPLIER : company;
+    }
     public String vendorCode() { return text(channel, "vendorCode", "NCT").toUpperCase(Locale.ROOT); }
     public String locationCode() { return text(channel, "locationCode", "AMM").toUpperCase(Locale.ROOT); }
     public String currency() { return text(channel, "currency", "USD"); }
