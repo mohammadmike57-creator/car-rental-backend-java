@@ -1,6 +1,5 @@
 package com.carrental.backend.ota;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.Cipher;
@@ -19,10 +18,14 @@ import java.util.Base64;
 public class SecretBox {
     private static final String PREFIX = "v1:";
     private final SecretKeySpec key;
+    /** The current key first, then keys of JWT_SECRET_PREVIOUS: old secrets stay readable after a secret change. */
+    private final java.util.List<SecretKeySpec> keys;
     private final SecureRandom random = new SecureRandom();
 
-    public SecretBox(@Value("${jwt.secret}") String serverSecret) {
-        this.key = new SecretKeySpec(OAuthService.sha256(("urdrive-secret-box-v1:" + serverSecret).getBytes(StandardCharsets.UTF_8)), "AES");
+    public SecretBox(com.carrental.backend.config.ServerSecret serverSecret) {
+        this.keys = serverSecret.all().stream()
+            .map(s -> new SecretKeySpec(OAuthService.sha256(("urdrive-secret-box-v1:" + s).getBytes(StandardCharsets.UTF_8)), "AES")).toList();
+        this.key = keys.get(0);
     }
 
     public String seal(String plain) {
@@ -42,13 +45,19 @@ public class SecretBox {
 
     public String open(String sealed) {
         if (sealed == null || !sealed.startsWith(PREFIX)) throw new IllegalStateException("Unknown secret format");
-        try {
-            byte[] all = Base64.getDecoder().decode(sealed.substring(PREFIX.length()));
-            Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
-            c.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, all, 0, 12));
-            return new String(c.doFinal(all, 12, all.length - 12), StandardCharsets.UTF_8);
-        } catch (Exception e) {
-            throw new IllegalStateException("Could not decrypt the secret", e);
+        byte[] all;
+        try { all = Base64.getDecoder().decode(sealed.substring(PREFIX.length())); }
+        catch (IllegalArgumentException e) { throw new IllegalStateException("Could not decrypt the secret", e); }
+        Exception last = null;
+        for (SecretKeySpec k : keys) {
+            try {
+                Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+                c.init(Cipher.DECRYPT_MODE, k, new GCMParameterSpec(128, all, 0, 12));
+                return new String(c.doFinal(all, 12, all.length - 12), StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                last = e;   // sealed with another server secret: try the next one
+            }
         }
+        throw new IllegalStateException("Could not decrypt the secret", last);
     }
 }

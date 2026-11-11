@@ -70,7 +70,7 @@ class BrokerJourneyHttpTest {
         User u = users.findByEmail("journey@nct.test").orElseGet(User::new);
         u.setEmail("journey@nct.test"); u.setFullName("Journey Admin"); u.setUsername("journey");
         u.setPassword(encoder.encode("Pass-12345")); u.setStatus(UserStatus.ACTIVE); u.setWebAppAccess(true);
-        u.setPermissions(new ArrayList<>(List.of(UserPermission.VIEW_AGGREGATOR_SETUP)));
+        u.setPermissions(new ArrayList<>(List.of(UserPermission.VIEW_AGGREGATOR_SETUP, UserPermission.ACTION_ADMIN_MANAGE_FLEET, UserPermission.ACTION_ADMIN_MANAGE_LOCATIONS)));
         users.save(u);
         Rs r = call("POST", "/auth/login", "{\"email\":\"journey\",\"password\":\"Pass-12345\"}", "application/json");
         assertEquals(200, r.status(), r.body());

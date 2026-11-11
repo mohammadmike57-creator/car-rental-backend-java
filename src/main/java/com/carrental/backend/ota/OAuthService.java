@@ -35,10 +35,13 @@ public class OAuthService {
     private static final SecureRandom RANDOM = new SecureRandom();
     private final OAuthClientRepository clients;
     private final SecretKey key;
+    private final List<SecretKey> keys;
 
-    public OAuthService(OAuthClientRepository clients, @Value("${jwt.secret}") String serverSecret) {
+    public OAuthService(OAuthClientRepository clients, com.carrental.backend.config.ServerSecret serverSecret) {
         this.clients = clients;
-        this.key = Keys.hmacShaKeyFor(sha256(("urdrive-oauth-access-token-v1:" + serverSecret).getBytes(StandardCharsets.UTF_8)));
+        this.keys = serverSecret.all().stream()
+            .map(s -> Keys.hmacShaKeyFor(sha256(("urdrive-oauth-access-token-v1:" + s).getBytes(StandardCharsets.UTF_8)))).toList();
+        this.key = keys.get(0);
     }
 
     public Created create(String channelId, String environment, Collection<String> scopes, String name, String by) {
@@ -87,8 +90,14 @@ public class OAuthService {
     public Optional<Principal> verify(String token) {
         if (token == null || token.isBlank()) return Optional.empty();
         try {
-            Claims cl = Jwts.parserBuilder().setSigningKey(key).requireIssuer(ISSUER).requireAudience(AUDIENCE).build()
-                .parseClaimsJws(token).getBody();
+            Claims cl = null;
+            for (SecretKey k : keys) {   // current secret first, then JWT_SECRET_PREVIOUS
+                try {
+                    cl = Jwts.parserBuilder().setSigningKey(k).requireIssuer(ISSUER).requireAudience(AUDIENCE).build().parseClaimsJws(token).getBody();
+                    break;
+                } catch (io.jsonwebtoken.security.SignatureException e) { /* try the next secret */ }
+            }
+            if (cl == null) return Optional.empty();
             String clientId = cl.getSubject();
             Optional<OAuthClient> c = clients.findByClientId(clientId).filter(x -> "ACTIVE".equals(x.getStatus()));
             if (c.isEmpty() || !c.get().getChannelId().equals(cl.get("ch", String.class))) return Optional.empty();

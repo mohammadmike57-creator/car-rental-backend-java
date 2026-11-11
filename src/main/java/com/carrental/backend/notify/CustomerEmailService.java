@@ -96,7 +96,8 @@ public class CustomerEmailService {
         }
     }
 
-    private static Properties smtpProps(MailSettingsService.MailConfig cfg) {
+    /** SMTP connection settings for the configured mail server (SSL or STARTTLS). */
+    public static Properties smtpProps(MailSettingsService.MailConfig cfg) {
         Properties p = new Properties();
         p.put("mail.smtp.auth", "true");
         p.put("mail.smtp.host", cfg.host());

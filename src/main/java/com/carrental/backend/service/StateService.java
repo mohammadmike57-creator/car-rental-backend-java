@@ -19,6 +19,8 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class StateService {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(StateService.class);
+
     private final AppDataRepository appDataRepository;
     private final ObjectMapper objectMapper;
     private final org.springframework.context.ApplicationEventPublisher events;
@@ -26,9 +28,9 @@ public class StateService {
     private static final String INITIAL_STATE = "{" +
         "\"reservations\":{}," +
         "\"sources\":[" +
-            "{\"id\":\"1\",\"name\":\"Website\",\"paymentType\":\"PREPAID\"}," +
-            "{\"id\":\"2\",\"name\":\"Phone\",\"paymentType\":\"PAY_ON_ARRIVAL\"}," +
-            "{\"id\":\"3\",\"name\":\"Walk-in\",\"paymentType\":\"PAY_ON_ARRIVAL\"}" +
+            "{\"id\":\"1\",\"name\":\"Website\",\"paymentType\":\"Prepaid\"}," +
+            "{\"id\":\"2\",\"name\":\"Phone\",\"paymentType\":\"Pay on Arrival\"}," +
+            "{\"id\":\"3\",\"name\":\"Walk-in\",\"paymentType\":\"Pay on Arrival\"}" +
         "]," +
         "\"fleet\":[" +
             "{\"id\":\"v1\",\"modelName\":\"Toyota Corolla\",\"licensePlate\":\"\",\"registrationExpiry\":\"2026-12-31\",\"category\":\"Economy\",\"securityDeposit\":200,\"excess\":500,\"sippCode\":\"EDMR\",\"transmission\":\"AUTOMATIC\"}," +
@@ -64,7 +66,52 @@ public class StateService {
         return loadMain().getData();
     }
 
+    /** The data as sent to the app: the same, but without any password fields left in the staff list by older versions. */
+    public String getStateForClient() {
+        String data = getFullState();
+        try {
+            JsonNode root = objectMapper.readTree(data);
+            if (!(root instanceof ObjectNode o) || !StateSectionGuard.stripPasswords(o.path("users"))) return data;
+            return objectMapper.writeValueAsString(o);
+        } catch (Exception e) {
+            return data;
+        }
+    }
+
     public synchronized void mergeState(String updatesJson) {
+        mergeState(updatesJson, StateSectionGuard.Writer.SYSTEM);
+    }
+
+    /** The older whole-section save, with the same section permissions as {@link #applyPatch(String, StateSectionGuard.Writer)}. */
+    public synchronized List<String> mergeState(String updatesJson, StateSectionGuard.Writer writer) {
+        List<String> skipped = new java.util.ArrayList<>();
+        if (!writer.isAdmin()) {
+            try {
+                JsonNode current = objectMapper.readTree(loadMain().getData());
+                ObjectNode updates = (ObjectNode) objectMapper.readTree(updatesJson);
+                for (String key : new java.util.ArrayList<>(iterable(updates.fieldNames()))) {
+                    if (StateSectionGuard.maySet(writer, key)) continue;
+                    JsonNode own = "users".equals(key) ? StateSectionGuard.ownUserOnly(writer, current.path(key), updates.get(key)) : null;
+                    if (own != null) { updates.set(key, own); continue; }
+                    if (!updates.get(key).equals(current.path(key))) skipped.add(key);
+                    updates.remove(key);
+                }
+                updatesJson = objectMapper.writeValueAsString(updates);
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to check the save: " + e.getMessage(), e);
+            }
+        }
+        mergeUnchecked(updatesJson);
+        return skipped;
+    }
+
+    private static java.util.List<String> iterable(java.util.Iterator<String> it) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        it.forEachRemaining(out::add);
+        return out;
+    }
+
+    private void mergeUnchecked(String updatesJson) {
         // Ensure the document exists before merging
         AppData appData = loadMain();
         autoBackup(appData);
@@ -82,6 +129,34 @@ public class StateService {
     }
 
     private static final int AUTO_BACKUPS_KEPT = 72; // three days of hourly copies
+    static final int UPDATE_BACKUPS_KEPT = 10;
+
+    /**
+     * Every time a new version of the server starts (each update on Render), a full copy of the data is
+     * kept first as "backup-before-update-<time>", before anyone can change anything. These are separate
+     * from the hourly copies; the newest 10 are kept. A failed copy never stops the server.
+     */
+    @org.springframework.context.event.EventListener(org.springframework.boot.context.event.ApplicationReadyEvent.class)
+    public synchronized void backupBeforeUpdate() {
+        try {
+            appDataRepository.findMain().ifPresent(main -> {
+                AppData copy = new AppData();
+                copy.setId("backup-before-update-" + Instant.now().toString().replace(':', '-'));
+                copy.setData(appDataRepository.currentMainData().orElse(main.getData()));
+                appDataRepository.save(copy);
+                log.info("Data backup kept before this update: {}", copy.getId());
+                List<String> ids = appDataRepository.updateBackupIds();
+                for (int i = UPDATE_BACKUPS_KEPT; i < ids.size(); i++) appDataRepository.deleteById(ids.get(i));
+            });
+        } catch (Exception e) {
+            log.warn("Could not keep a backup before this update: {}", e.getMessage());
+        }
+    }
+
+    /** All the data as one JSON file for an administrator to keep (passwords removed). */
+    public String backupFileContent() {
+        return getStateForClient();
+    }
     private Instant lastAutoBackup;
 
     /**
@@ -124,6 +199,15 @@ public class StateService {
      * Writes are serialised, so each change is applied to the latest saved data.
      */
     public synchronized void applyPatch(String patchJson) {
+        applyPatch(patchJson, StateSectionGuard.Writer.SYSTEM);
+    }
+
+    /**
+     * As {@link #applyPatch(String)}, for a signed-in person: sections they may not change are skipped (see
+     * {@link StateSectionGuard}). Returns the names of the skipped sections.
+     */
+    public synchronized List<String> applyPatch(String patchJson, StateSectionGuard.Writer writer) {
+        List<String> skipped = new java.util.ArrayList<>();
         AppData appData = loadMain();
         autoBackup(appData);
         try {
@@ -132,7 +216,8 @@ public class StateService {
             JsonNode ops = patch.path("ops");
             // Safety net against a screen that failed to load overwriting everything: deleting many
             // bookings at once needs an explicit flag, and a list holding several items is never emptied.
-            boolean bulkAllowed = patch.path("allowBulkDelete").asBoolean(false);
+            // Deleting many bookings at once also needs the "delete all reservations" permission.
+            boolean bulkAllowed = patch.path("allowBulkDelete").asBoolean(false) && StateSectionGuard.mayBulkDelete(writer);
             int deletes = 0;
             for (JsonNode op : ops) if ("deleteReservation".equals(op.path("op").asText())) deletes++;
             boolean refuseDeletes = deletes > 3 && !bulkAllowed;
@@ -163,6 +248,15 @@ public class StateService {
                         String key = op.path("key").asText();
                         JsonNode value = op.path("value");
                         JsonNode existing = root.path(key);
+                        if (!StateSectionGuard.maySet(writer, key)) {
+                            JsonNode own = "users".equals(key) ? StateSectionGuard.ownUserOnly(writer, existing, value) : null;
+                            if (own == null) {
+                                if (!value.equals(existing)) skipped.add(key);
+                                break;
+                            }
+                            value = own;
+                        }
+                        if ("users".equals(key)) { value = value.deepCopy(); StateSectionGuard.stripPasswords(value); }
                         boolean wipesList = value.isArray() && value.size() == 0 && existing.isArray() && existing.size() >= 2;
                         if (!key.isEmpty() && !wipesList) root.set(key, value);
                     }
@@ -178,6 +272,11 @@ public class StateService {
         } catch (Exception e) {
             throw new RuntimeException("Failed to apply changes: " + e.getMessage(), e);
         }
+        if (!skipped.isEmpty()) {
+            org.slf4j.LoggerFactory.getLogger(StateService.class)
+                .warn("Save by {}: skipped section(s) {} (no permission to change them)", writer.email(), skipped);
+        }
+        return skipped;
     }
 
     /** Removes a broker booking's copy from the reservations list (staff deleted it under OTA XML). */
