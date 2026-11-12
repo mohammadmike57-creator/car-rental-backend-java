@@ -31,6 +31,8 @@ so logins and stored secrets keep working), `APP_BASE_URL`, `CORS_ALLOWED_ORIGIN
 
 Monitoring: `ALERT_EMAIL` (error summary emails, at most every 30 minutes) and Render's Health Check Path `/health` (OK only while the database answers). Errors get a reference like `ERR-7K2M9Q` and are listed in Activity Log → System errors.
 
+Data storage: `STORAGE_MODE` = `document` (default, as before), `dual`, `tables` or `tables-only` (see `docs/database-plan.md`; change one step at a time, with a Render export first).
+
 Never commit secret values. `docs/application.example.yml` lists the settings without values.
 
 ## Changing the server secret
