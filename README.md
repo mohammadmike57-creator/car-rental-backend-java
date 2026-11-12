@@ -41,6 +41,12 @@ Optional per person (My Profile → Two-step sign-in): password, then a 6-digit 
 a single-use backup code. Off until each person turns it on. An administrator can turn it off for someone who lost
 their phone (same page). Details in the website repository's README.
 
+## Broker XML (OpenTravel)
+
+Each broker channel has an XML layout (OTA XML → channel → Connection → OpenTravel XML layout): **OpenTravel
+standard** (new channels; every answer valid against the official OpenTravel 2017B schemas, checked by the tests) or
+**As connected** (the layout an existing broker was built against). Details in the website repository's README.
+
 ## Changing the server secret
 
 1. Set `JWT_SECRET_PREVIOUS` to the current value and `JWT_SECRET` to a new random value.
