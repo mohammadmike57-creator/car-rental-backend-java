@@ -35,6 +35,12 @@ Data storage: `STORAGE_MODE` = `document` (default, as before), `dual`, `tables`
 
 Never commit secret values. `docs/application.example.yml` lists the settings without values.
 
+## Two-step sign-in
+
+Optional per person (My Profile → Two-step sign-in): password, then a 6-digit code from an authenticator app or
+a single-use backup code. Off until each person turns it on. An administrator can turn it off for someone who lost
+their phone (same page). Details in the website repository's README.
+
 ## Changing the server secret
 
 1. Set `JWT_SECRET_PREVIOUS` to the current value and `JWT_SECRET` to a new random value.
